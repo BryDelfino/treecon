@@ -1,0 +1,11 @@
+name: treecon
+environment:
+  sdk: ^3.6.0
+
+workspace:
+  - apps/scout_mobile
+  - apps/commander_web
+  - packages/core
+  - packages/shared_models
+  - packages/shared_services
+  - packages/shared_ui
