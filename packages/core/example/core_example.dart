@@ -1,6 +1,7 @@
 import 'package:core/core.dart';
+import 'dart:developer' as developer;
 
 void main() {
   var awesome = Awesome();
-  print('awesome: ${awesome.isAwesome}');
+  developer.log('awesome: ${awesome.isAwesome}', name: 'my.app.category');
 }
