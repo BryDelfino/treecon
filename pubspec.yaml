@@ -22,3 +22,4 @@ melos:
     test: 
       run: melos exec --dir-exists="test" -- flutter test
       description: Run tests in packages that have tests.
+
