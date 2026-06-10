@@ -38,6 +38,7 @@ local.properties
 # IDEs and Editors
 .idea/
 .vscode/
+*.iml
 *.imap
 *.extname
 *.suo
