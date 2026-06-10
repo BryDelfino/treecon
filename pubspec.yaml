@@ -9,3 +9,17 @@ workspace:
   - packages/shared_models
   - packages/shared_services
   - packages/shared_ui
+
+dev_dependencies:
+  melos: ^7.8.1
+
+melos:
+  scripts:
+    analyze:
+      run: melos exec -- flutter analyze
+      description: Run analysis in all packages.
+
+    test: 
+      run: melos exec --dir-exists="test" -- flutter test
+      description: Run tests in packages that have tests.
+
