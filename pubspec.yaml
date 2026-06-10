@@ -22,29 +22,3 @@ melos:
     test: 
       run: melos exec --dir-exists="test" -- flutter test
       description: Run tests in packages that have tests.
-
-    build:android:
-      run: |
-        cd apps/scout_mobile
-        flutter build appbundle --release
-      description: Build Android App Bundle (Scout Mobile).
-
-    build:ios:
-      run: |
-        cd apps/scout_mobile
-        flutter build ios --release --no-codesign
-        description: Build iOS (Scout Mobile) without code signing.
-
-    build:web:
-      run: |
-        cd apps/commander_web
-        flutter build web --release
-      description: Build Web (Commander Web).
-
-
-    build:all:
-      run: |
-        melos run build:android
-        melos run build:web
-      description: Build all non-macOS targets.
-
