@@ -1,0 +1,20 @@
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  exclude:
+    - "**.g.dart"
+    - "**.freezed.dart"
+    - "build/**"
+
+  errors:
+    missing_required_param: error
+    missing_return: error
+    todo: info
+
+linter:
+  rules:
+    - prefer_const_constructors
+    - prefer_const_declarations
+    - avoid_print
+    - always_declare_return_types
+    - avoid_dynamic_calls
