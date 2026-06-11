@@ -1,6 +1,7 @@
 name: shared_services
 description: "Shared services of the project."
 version: 0.0.1
+publish_to: none
 resolution: workspace
 homepage:
 
@@ -12,6 +13,8 @@ dependencies:
   flutter:
     sdk: flutter
   supabase_flutter: ^2.14.2
+  shared_models:
+    path: ../shared_models
 
 dev_dependencies:
   flutter_test:
