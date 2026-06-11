@@ -1,5 +1,3 @@
 export 'package:supabase_flutter/supabase_flutter.dart';
-
-class Calculator {
-  int addOne(int value) => value + 1;
-}
+export 'src/todo_service.dart';
+export 'package:shared_models/shared_models.dart';
