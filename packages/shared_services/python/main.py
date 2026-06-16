@@ -55,6 +55,16 @@ def get_forecast(req: CARequest):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"CA Error: {str(e)}")
 
+@app.post("/api/kriging")
+def get_kriging():
+    try:
+        result = simulation.run_kriging()
+        return result
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Kriging Error: {str(e)}")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)
+

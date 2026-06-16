@@ -6,6 +6,8 @@ from scipy.spatial import distance_matrix
 from shapely.geometry import shape, Polygon, MultiPolygon
 from shapely.ops import unary_union
 import geojson
+from pykrige.ok import OrdinaryKriging
+
 
 # Configure Matplotlib to run in headless/non-GUI mode
 import matplotlib
@@ -13,12 +15,25 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 def load_boundary():
+    """Load the Philippines boundary geometry.
+    The GeoJSON asset is a FeatureCollection containing multiple features.
+    We combine all feature geometries into a single (multi)polygon and
+    simplify it for faster spatial operations.
+    """
     base_dir = os.path.dirname(os.path.abspath(__file__))
     json_path = os.path.join(base_dir, "..", "..", "..", "apps", "commander_web", "assets", "philippines.json")
     
     with open(json_path, 'r') as f:
         data = json.load(f)
-    return shape(data['geometry']).simplify(0.005, preserve_topology=True)
+    # If the file is a FeatureCollection, union all geometries.
+    if data.get('type') == 'FeatureCollection' and 'features' in data:
+        geometries = [shape(feature['geometry']) for feature in data['features'] if 'geometry' in feature]
+        combined = unary_union(geometries)
+    else:
+        # Fallback to direct geometry field
+        combined = shape(data['geometry'])
+    # Simplify to reduce complexity while preserving topology
+    return combined.simplify(0.005, preserve_topology=True)
 
 def _filter_polygons(geom):
     if geom.is_empty:
@@ -264,3 +279,103 @@ def run_ca_simulation(steps=5, grid_resolution=0.12, spread_factor=0.08):
                 
     plt.close(fig)
     return geojson.FeatureCollection(features)
+
+def run_kriging(grid_resolution=0.12):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    csv_path = os.path.join(base_dir, "..", "..", "..", "tulod_falcata_spatial_data.csv")
+    
+    df = pd.read_csv(csv_path)
+    df = df.dropna(subset=['longitude', 'latitude', 'severity_index_pct']).drop_duplicates(subset=['longitude', 'latitude'])
+    x = df['longitude'].values
+    y = df['latitude'].values
+    z = df['severity_index_pct'].values
+    
+    min_lng, max_lng = df['longitude'].min() - 0.2, df['longitude'].max() + 0.2
+    min_lat, max_lat = df['latitude'].min() - 0.2, df['latitude'].max() + 0.2
+    
+    boundary = load_boundary()
+    
+    gridx = np.linspace(min_lng, max_lng, 120)
+    gridy = np.linspace(min_lat, max_lat, 120)
+    grid_lng_mesh, grid_lat_mesh = np.meshgrid(gridx, gridy)
+    
+    ok = OrdinaryKriging(
+        x, y, z,
+        variogram_model='linear',
+        verbose=False,
+        enable_plotting=False
+    )
+    
+    kriging_values, ss = ok.execute('grid', gridx, gridy)
+    kriging_values = np.clip(np.array(kriging_values), 0.0, 100.0)
+    
+    levels = [0.0, 10.0, 25.0, 50.0, 75.0, 100.0]
+    
+    fig, ax = plt.subplots()
+    cs = ax.contourf(grid_lng_mesh, grid_lat_mesh, kriging_values, levels=levels)
+    
+    features = []
+    
+    if hasattr(cs, 'collections') and cs.collections:
+        contour_iter = cs.collections
+    else:
+        contour_iter = None
+
+    if contour_iter is not None:
+        for level_idx, collection in enumerate(contour_iter):
+            val_lower = levels[level_idx]
+            val_upper = levels[level_idx + 1]
+            color = get_color_for_value((val_lower + val_upper) / 2.0)
+
+            paths = collection.get_paths()
+            polygons = []
+            for path in paths:
+                for path_seg in path.to_polygons():
+                    if len(path_seg) >= 3:
+                        poly = Polygon(path_seg)
+                        if not poly.is_valid:
+                            poly = poly.buffer(0)
+                        if poly.is_valid and not poly.is_empty:
+                            polygons.append(poly)
+
+            if polygons:
+                merged_poly = unary_union(polygons)
+                clipped_poly = _filter_polygons(merged_poly.intersection(boundary))
+                if clipped_poly is not None and not clipped_poly.is_empty:
+                    features.append(geojson.Feature(
+                        geometry=clipped_poly,
+                        properties={
+                            "value_range": f"{val_lower}-{val_upper}",
+                            "color": color
+                        }
+                    ))
+    else:
+        for level_idx, segs in enumerate(cs.allsegs):
+            val_lower = levels[level_idx]
+            val_upper = levels[level_idx + 1]
+            color = get_color_for_value((val_lower + val_upper) / 2.0)
+
+            polygons = []
+            for seg in segs:
+                if len(seg) >= 3:
+                    poly = Polygon(seg)
+                    if not poly.is_valid:
+                        poly = poly.buffer(0)
+                    if poly.is_valid and not poly.is_empty:
+                        polygons.append(poly)
+
+            if polygons:
+                merged_poly = unary_union(polygons)
+                clipped_poly = _filter_polygons(merged_poly.intersection(boundary))
+                if clipped_poly is not None and not clipped_poly.is_empty:
+                    features.append(geojson.Feature(
+                        geometry=clipped_poly,
+                        properties={
+                            "value_range": f"{val_lower}-{val_upper}",
+                            "color": color
+                        }
+                    ))
+                
+    plt.close(fig)
+    return geojson.FeatureCollection(features)
+
