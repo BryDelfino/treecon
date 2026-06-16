@@ -13,36 +13,74 @@ class MapPage extends StatefulWidget {
 }
 
 class _MapPageState extends State<MapPage> {
-  List<List<LatLng>> _boundaryRings = [];
-  List<Polygon> _overlayPolygons = [];
-  bool _isLoading = true;
-  bool _isOverlayLoading = false;
 
-  // Customization state
-  double _fillOpacity = 0.25;
-  double _borderOpacity = 0.80;
-  double _borderWidth = 2.0;
-  Color _selectedColor = Colors.green;
+  List<Polygon> _countryPolygons = [];
+  List<Polygon> _idwPolygons = [];
+  List<Polygon> _caPolygons = [];
+  List<Polygon> _krigingPolygons = [];
+  bool _isLoading = true;
+  bool _isIdwLoading = false;
+  bool _isCaLoading = false;
+  bool _isKrigingLoading = false;
+
+  // Customization state (fixed defaults)
+  static const double _fillOpacity = 0.25;
+  static const double _borderOpacity = 0.80;
+  static const double _borderWidth = 2.0;
+  static const Color _selectedColor = Colors.green;
 
   // Simulation layers state
   bool _showIDW = false;
   bool _showCA = false;
+  bool _showKriging = false;
   int _caSteps = 5;
-
-  final List<Color> _colorOptions = [
-    Colors.green,
-    Colors.teal,
-    Colors.blue,
-    Colors.indigo,
-    Colors.orange,
-    Colors.red,
-    Colors.blueGrey,
-  ];
 
   @override
   void initState() {
     super.initState();
-    _loadBoundary();
+    _loadCountryBoundary();
+    _fetchIDW();
+    _fetchForecast(_caSteps);
+    _fetchKriging();
+  }
+
+  // Loads the country boundary once and caches polygons
+  Future<void> _loadCountryBoundary() async {
+    try {
+      final String jsonString = await rootBundle.loadString('assets/philippines.json');
+      final Map<String, dynamic> geoJson = json.decode(jsonString);
+      final List<Polygon> polygons = [];
+
+      final List<dynamic> features = geoJson['features'] as List<dynamic>;
+      for (final feature in features) {
+        final Map<String, dynamic> geometry = feature['geometry'] as Map<String, dynamic>;
+        if (geometry['type'] == 'MultiPolygon') {
+          final List<dynamic> coordinates = geometry['coordinates'] as List<dynamic>;
+          for (final polygonData in coordinates) {
+            for (final ringData in polygonData as List<dynamic>) {
+              final List<LatLng> points = [];
+              for (final coord in ringData as List<dynamic>) {
+                final double lng = (coord[0] as num).toDouble();
+                final double lat = (coord[1] as num).toDouble();
+                points.add(LatLng(lat, lng));
+              }
+              if (points.isNotEmpty) {
+                polygons.add(Polygon(points: points));
+              }
+            }
+          }
+        }
+      }
+      setState(() {
+        _countryPolygons = polygons;
+        _isLoading = false;
+      });
+    } catch (e) {
+      debugPrint('Error loading country GeoJSON: $e');
+      setState(() {
+        _isLoading = false;
+      });
+    }
   }
 
   // Parses a hex color string (e.g. "#A1D99B") into a Flutter Color
@@ -53,51 +91,10 @@ class _MapPageState extends State<MapPage> {
     return Color(int.parse(buffer.toString(), radix: 16));
   }
 
-  // Loads the base country boundary map
-  Future<void> _loadBoundary() async {
-    try {
-      final String jsonString = await rootBundle.loadString('assets/philippines.json');
-      final Map<String, dynamic> geoJson = json.decode(jsonString);
-      final List<List<LatLng>> rings = [];
-
-      final Map<String, dynamic>? geometry = geoJson['geometry'] as Map<String, dynamic>?;
-      if (geometry != null && geometry['type'] == 'MultiPolygon') {
-        final coordinates = geometry['coordinates'] as List<dynamic>;
-        for (final polygonData in coordinates) {
-          final polyList = polygonData as List<dynamic>;
-          for (final ringData in polyList) {
-            final ringList = ringData as List<dynamic>;
-            final List<LatLng> points = [];
-            for (final coord in ringList) {
-              final coordList = coord as List<dynamic>;
-              final double lng = (coordList[0] as num).toDouble();
-              final double lat = (coordList[1] as num).toDouble();
-              points.add(LatLng(lat, lng));
-            }
-            if (points.isNotEmpty) {
-              rings.add(points);
-            }
-          }
-        }
-      }
-
-      setState(() {
-        _boundaryRings = rings;
-        _isLoading = false;
-      });
-    } catch (e) {
-      debugPrint("Error loading boundary GeoJSON: $e");
-      setState(() {
-        _isLoading = false;
-      });
-    }
-  }
-
   // Fetches IDW Contours from Python server
   Future<void> _fetchIDW() async {
     setState(() {
-      _isOverlayLoading = true;
-      _overlayPolygons = [];
+      _isIdwLoading = true;
     });
     try {
       final response = await http.post(
@@ -109,7 +106,10 @@ class _MapPageState extends State<MapPage> {
         }),
       );
       if (response.statusCode == 200) {
-        _parseOverlayGeoJSON(response.body);
+        final polygons = _parseGeoJSON(response.body);
+        setState(() {
+          _idwPolygons = polygons;
+        });
       } else {
         debugPrint("API Error: ${response.statusCode}");
       }
@@ -117,7 +117,34 @@ class _MapPageState extends State<MapPage> {
       debugPrint("Connection error: $e");
     } finally {
       setState(() {
-        _isOverlayLoading = false;
+        _isIdwLoading = false;
+      });
+    }
+  }
+
+  // Fetches Kriging Contours from Python server
+  Future<void> _fetchKriging() async {
+    setState(() {
+      _isKrigingLoading = true;
+    });
+    try {
+      final response = await http.post(
+        Uri.parse('http://127.0.0.1:8000/api/kriging'),
+        headers: {'Content-Type': 'application/json'},
+      );
+      if (response.statusCode == 200) {
+        final polygons = _parseGeoJSON(response.body);
+        setState(() {
+          _krigingPolygons = polygons;
+        });
+      } else {
+        debugPrint("API Error: ${response.statusCode}");
+      }
+    } catch (e) {
+      debugPrint("Connection error: $e");
+    } finally {
+      setState(() {
+        _isKrigingLoading = false;
       });
     }
   }
@@ -125,8 +152,7 @@ class _MapPageState extends State<MapPage> {
   // Fetches Cellular Automata spread forecast from Python server
   Future<void> _fetchForecast(int steps) async {
     setState(() {
-      _isOverlayLoading = true;
-      _overlayPolygons = [];
+      _isCaLoading = true;
     });
     try {
       final response = await http.post(
@@ -139,7 +165,10 @@ class _MapPageState extends State<MapPage> {
         }),
       );
       if (response.statusCode == 200) {
-        _parseOverlayGeoJSON(response.body);
+        final polygons = _parseGeoJSON(response.body);
+        setState(() {
+          _caPolygons = polygons;
+        });
       } else {
         debugPrint("API Error: ${response.statusCode}");
       }
@@ -147,13 +176,13 @@ class _MapPageState extends State<MapPage> {
       debugPrint("Connection error: $e");
     } finally {
       setState(() {
-        _isOverlayLoading = false;
+        _isCaLoading = false;
       });
     }
   }
 
   // Helper to parse features from spatial engine GeoJSON output
-  void _parseOverlayGeoJSON(String jsonString) {
+  List<Polygon> _parseGeoJSON(String jsonString) {
     try {
       final Map<String, dynamic> data = json.decode(jsonString);
       final List<Polygon> parsedList = [];
@@ -213,11 +242,10 @@ class _MapPageState extends State<MapPage> {
           }
         }
       }
-      setState(() {
-        _overlayPolygons = parsedList;
-      });
+      return parsedList;
     } catch (e) {
       debugPrint("Error parsing overlay GeoJSON: $e");
+      return [];
     }
   }
 
@@ -255,12 +283,6 @@ class _MapPageState extends State<MapPage> {
 
   @override
   Widget build(BuildContext context) {
-    Color borderColor = _selectedColor == Colors.blueGrey 
-        ? Colors.blueGrey.shade900 
-        : _selectedColor is MaterialColor 
-            ? (_selectedColor as MaterialColor).shade800 
-            : _selectedColor;
-
     return Scaffold(
       appBar: AppBar(
         title: const Text("Treecon Commander - Spatial Map"),
@@ -277,29 +299,31 @@ class _MapPageState extends State<MapPage> {
             ),
             children: [
               TileLayer(
-                urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
                 userAgentPackageName: 'com.treecon.commander',
               ),
-              
-              // 1. Base Mask Boundary Outline
-              if (_boundaryRings.isNotEmpty)
+              if (_countryPolygons.isNotEmpty)
                 PolygonLayer(
-                  polygons: _boundaryRings.map((points) {
-                    return Polygon(
-                      points: points,
-                      // ignore: deprecated_member_use
-                      color: _selectedColor.withOpacity(_fillOpacity),
-                      // ignore: deprecated_member_use
-                      borderColor: borderColor.withOpacity(_borderOpacity),
-                      borderStrokeWidth: _borderWidth,
-                    );
-                  }).toList(),
+                  polygons: _countryPolygons.map((poly) => Polygon(
+                    points: poly.points,
+                    color: _selectedColor.withValues(alpha: _fillOpacity),
+                    borderColor: _selectedColor.withValues(alpha: _borderOpacity),
+                    borderStrokeWidth: _borderWidth,
+                  )).toList(),
                 ),
-
+              
               // 2. Dynamic simulation contour layers
-              if ((_showIDW || _showCA) && _overlayPolygons.isNotEmpty)
+              if (_showIDW && _idwPolygons.isNotEmpty)
                 PolygonLayer(
-                  polygons: _overlayPolygons,
+                  polygons: _idwPolygons,
+                ),
+              if (_showCA && _caPolygons.isNotEmpty)
+                PolygonLayer(
+                  polygons: _caPolygons,
+                ),
+              if (_showKriging && _krigingPolygons.isNotEmpty)
+                PolygonLayer(
+                  polygons: _krigingPolygons,
                 ),
             ],
           ),
@@ -341,7 +365,7 @@ class _MapPageState extends State<MapPage> {
 
                         // Layer Selection
                         const Text(
-                          "Simulation Layer",
+                          "Simulation Layers",
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
@@ -349,162 +373,56 @@ class _MapPageState extends State<MapPage> {
                           ),
                         ),
                         const SizedBox(height: 8),
-                        Column(
-                          children: [
-                            _buildLayerButton(
-                              title: "None (Base Outline Only)",
-                              active: !_showIDW && !_showCA,
-                              icon: Icons.map_outlined,
-                              onTap: () {
-                                setState(() {
-                                  _showIDW = false;
-                                  _showCA = false;
-                                  _overlayPolygons = [];
-                                });
-                              },
-                            ),
-                            const SizedBox(height: 8),
-                            _buildLayerButton(
-                              title: "IDW Interpolation Contours",
-                              active: _showIDW,
-                              icon: Icons.waves,
-                              onTap: () {
-                                setState(() {
-                                  _showIDW = true;
-                                  _showCA = false;
-                                });
-                                _fetchIDW();
-                              },
-                            ),
-                            const SizedBox(height: 8),
-                            _buildLayerButton(
-                              title: "CA Spread Forecast",
-                              active: _showCA,
-                              icon: Icons.online_prediction,
-                              onTap: () {
-                                setState(() {
-                                  _showIDW = false;
-                                  _showCA = true;
-                                });
-                                _fetchForecast(_caSteps);
-                              },
-                            ),
-                          ],
-                        ),
-                        const Divider(height: 24),
-                        
-                        // Color Options
-                        const Text(
-                          "Mask Base Color",
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.grey,
+                        CheckboxListTile(
+                          title: const Text(
+                            "IDW Interpolation Contours",
+                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
                           ),
-                        ),
-                        const SizedBox(height: 8),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: _colorOptions.map((color) {
-                            final bool isSelected = _selectedColor == color;
-                            return GestureDetector(
-                              onTap: () {
-                                setState(() {
-                                  _selectedColor = color;
-                                });
-                              },
-                              child: Container(
-                                width: 30,
-                                height: 30,
-                                decoration: BoxDecoration(
-                                  color: color,
-                                  shape: BoxShape.circle,
-                                  border: Border.all(
-                                    color: isSelected ? Colors.black : Colors.white,
-                                    width: isSelected ? 2.5 : 1.0,
-                                  ),
-                                  boxShadow: [
-                                    BoxShadow(
-                                      // ignore: deprecated_member_use
-                                      color: Colors.black.withOpacity(0.15),
-                                      blurRadius: 4,
-                                      offset: const Offset(0, 2),
-                                    )
-                                  ],
-                                ),
-                              ),
-                            );
-                          }).toList(),
-                        ),
-                        const SizedBox(height: 16),
-
-                        // Fill Opacity
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text(
-                              "Mask Fill Opacity",
-                              style: TextStyle(fontWeight: FontWeight.w500),
-                            ),
-                            Text("${(_fillOpacity * 100).round()}%"),
-                          ],
-                        ),
-                        Slider(
-                          value: _fillOpacity,
-                          min: 0.0,
-                          max: 1.0,
-                          activeColor: _selectedColor,
-                          onChanged: (val) {
+                          secondary: Icon(Icons.waves, color: _showIDW ? Colors.green.shade700 : Colors.grey),
+                          value: _showIDW,
+                          activeColor: Colors.green.shade700,
+                          onChanged: (bool? val) {
                             setState(() {
-                              _fillOpacity = val;
+                              _showIDW = val ?? false;
                             });
                           },
+                          controlAffinity: ListTileControlAffinity.leading,
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
                         ),
-
-                        // Border Opacity
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text(
-                              "Mask Border Opacity",
-                              style: TextStyle(fontWeight: FontWeight.w500),
-                            ),
-                            Text("${(_borderOpacity * 100).round()}%"),
-                          ],
-                        ),
-                        Slider(
-                          value: _borderOpacity,
-                          min: 0.0,
-                          max: 1.0,
-                          activeColor: _selectedColor,
-                          onChanged: (val) {
+                        CheckboxListTile(
+                          title: const Text(
+                            "CA Spread Forecast",
+                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                          ),
+                          secondary: Icon(Icons.online_prediction, color: _showCA ? Colors.green.shade700 : Colors.grey),
+                          value: _showCA,
+                          activeColor: Colors.green.shade700,
+                          onChanged: (bool? val) {
                             setState(() {
-                              _borderOpacity = val;
+                              _showCA = val ?? false;
                             });
                           },
+                          controlAffinity: ListTileControlAffinity.leading,
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
                         ),
-
-                        // Border Width
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                          children: [
-                            const Text(
-                              "Mask Border Width",
-                              style: TextStyle(fontWeight: FontWeight.w500),
-                            ),
-                            Text("${_borderWidth.toStringAsFixed(1)} px"),
-                          ],
-                        ),
-                        Slider(
-                          value: _borderWidth,
-                          min: 0.5,
-                          max: 6.0,
-                          activeColor: _selectedColor,
-                          onChanged: (val) {
+                        CheckboxListTile(
+                          title: const Text(
+                            "Kriging Interpolation Contours",
+                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                          ),
+                          secondary: Icon(Icons.grain, color: _showKriging ? Colors.green.shade700 : Colors.grey),
+                          value: _showKriging,
+                          activeColor: Colors.green.shade700,
+                          onChanged: (bool? val) {
                             setState(() {
-                              _borderWidth = val;
+                              _showKriging = val ?? false;
                             });
                           },
+                          controlAffinity: ListTileControlAffinity.leading,
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
                         ),
                       ],
                     ),
@@ -592,7 +510,7 @@ class _MapPageState extends State<MapPage> {
               ),
             ),
 
-          if (_isLoading || _isOverlayLoading)
+          if (_isLoading || _isIdwLoading || _isCaLoading || _isKrigingLoading)
             Center(
               child: Card(
                 elevation: 4,
@@ -603,7 +521,15 @@ class _MapPageState extends State<MapPage> {
                     children: [
                       const CircularProgressIndicator(color: Colors.green),
                       const SizedBox(width: 16),
-                      Text(_isLoading ? "Loading boundary map..." : "Fetching simulation layers..."),
+                      Text(_isLoading
+                          ? "Loading boundary map..."
+                          : (_isIdwLoading && _isCaLoading && _isKrigingLoading)
+                              ? "Fetching simulation layers..."
+                              : _isIdwLoading
+                                  ? "Fetching IDW contours..."
+                                  : _isCaLoading
+                                      ? "Fetching CA forecast..."
+                                      : "Fetching Kriging contours..."),
                     ],
                   ),
                 ),
