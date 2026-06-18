@@ -54,7 +54,9 @@ class _MapPageState extends State<MapPage> {
       final List<dynamic> features = geoJson['features'] as List<dynamic>;
       for (final feature in features) {
         final Map<String, dynamic> geometry = feature['geometry'] as Map<String, dynamic>;
-        if (geometry['type'] == 'MultiPolygon') {
+        final String geomType = geometry['type'] as String;
+
+        if (geomType == 'MultiPolygon') {
           final List<dynamic> coordinates = geometry['coordinates'] as List<dynamic>;
           for (final polygonData in coordinates) {
             for (final ringData in polygonData as List<dynamic>) {
@@ -65,8 +67,21 @@ class _MapPageState extends State<MapPage> {
                 points.add(LatLng(lat, lng));
               }
               if (points.isNotEmpty) {
-                polygons.add(Polygon(points: points));
+                polygons.add(Polygon(points: points, hitValue: feature['properties']));
               }
+            }
+          }
+        } else if (geomType == 'Polygon') {
+          final List<dynamic> coordinates = geometry['coordinates'] as List<dynamic>;
+          for (final ringData in coordinates) {
+            final List<LatLng> points = [];
+            for (final coord in ringData as List<dynamic>) {
+              final double lng = (coord[0] as num).toDouble();
+              final double lat = (coord[1] as num).toDouble();
+              points.add(LatLng(lat, lng));
+            }
+            if (points.isNotEmpty) {
+              polygons.add(Polygon(points: points, hitValue: feature['properties']));
             }
           }
         }
@@ -296,6 +311,7 @@ class _MapPageState extends State<MapPage> {
             options: const MapOptions(
               initialCenter: LatLng(12.8797, 121.7740),
               initialZoom: 6,
+              minZoom: 6,
             ),
             children: [
               TileLayer(
@@ -306,7 +322,7 @@ class _MapPageState extends State<MapPage> {
                 PolygonLayer(
                   polygons: _countryPolygons.map((poly) => Polygon(
                     points: poly.points,
-                    color: _selectedColor.withValues(alpha: _fillOpacity),
+                    color: Colors.transparent,
                     borderColor: _selectedColor.withValues(alpha: _borderOpacity),
                     borderStrokeWidth: _borderWidth,
                   )).toList(),
