@@ -3,6 +3,7 @@ import os
 import pandas as pd
 import numpy as np
 from scipy.spatial import distance_matrix
+from scipy.ndimage import convolve
 from shapely.geometry import shape, Polygon, MultiPolygon
 from shapely.ops import unary_union
 import geojson
@@ -70,21 +71,30 @@ def run_idw(grid_resolution=0.12, power=2.0):
     min_lat, max_lat = df['latitude'].min() - 0.2, df['latitude'].max() + 0.2
     
     boundary = load_boundary()
+    min_lng, min_lat, max_lng, max_lat = boundary.bounds
+    
+    # Target resolution of ~0.05 degrees per cell (matching original resolution)
+    resolution = 0.05
+    nx = int(np.ceil((max_lng - min_lng) / resolution))
+    ny = int(np.ceil((max_lat - min_lat) / resolution))
     
     # Create a dense grid for smooth curve calculations
-    grid_lng = np.linspace(min_lng, max_lng, 120)
-    grid_lat = np.linspace(min_lat, max_lat, 120)
+    grid_lng = np.linspace(min_lng, max_lng, nx)
+    grid_lat = np.linspace(min_lat, max_lat, ny)
     grid_lng_mesh, grid_lat_mesh = np.meshgrid(grid_lng, grid_lat)
     grid_points = np.vstack([grid_lng_mesh.ravel(), grid_lat_mesh.ravel()]).T
     
     # IDW matrix operations
     dist_mat = distance_matrix(grid_points, points)
+    min_distances = dist_mat.min(axis=1)
     dist_mat = np.where(dist_mat == 0, 1e-12, dist_mat)
     
     weights = 1.0 / (dist_mat ** power)
     weights /= weights.sum(axis=1, keepdims=True)
     
-    idw_values = np.dot(weights, values).reshape(120, 120)
+    idw_values = np.dot(weights, values)
+    # Apply distance threshold: if the nearest point is further than 1.5 degrees, force to 0.0
+    idw_values = np.where(min_distances > 1.5, 0.0, idw_values).reshape(ny, nx)
     
     # Levels mapping for contour curves
     levels = [0.0, 10.0, 25.0, 50.0, 75.0, 100.0]
@@ -167,45 +177,42 @@ def run_ca_simulation(steps=5, grid_resolution=0.12, spread_factor=0.08):
     points = df[['longitude', 'latitude']].values
     values = df['severity_index_pct'].values
     
-    min_lng, max_lng = df['longitude'].min() - 0.2, df['longitude'].max() + 0.2
-    min_lat, max_lat = df['latitude'].min() - 0.2, df['latitude'].max() + 0.2
-    
     boundary = load_boundary()
+    min_lng, min_lat, max_lng, max_lat = boundary.bounds
     
-    # CA grid size
-    grid_lng = np.linspace(min_lng, max_lng, 90)
-    grid_lat = np.linspace(min_lat, max_lat, 90)
+    # Target resolution of ~0.05 degrees per cell (matching original Mindanao resolution)
+    resolution = 0.05
+    nx = int(np.ceil((max_lng - min_lng) / resolution))
+    ny = int(np.ceil((max_lat - min_lat) / resolution))
     
-    nx, ny = len(grid_lng), len(grid_lat)
+    grid_lng = np.linspace(min_lng, max_lng, nx)
+    grid_lat = np.linspace(min_lat, max_lat, ny)
+    
     grid_lng_mesh, grid_lat_mesh = np.meshgrid(grid_lng, grid_lat)
     grid_points = np.vstack([grid_lng_mesh.ravel(), grid_lat_mesh.ravel()]).T
     
     dist_mat = distance_matrix(grid_points, points)
+    min_distances = dist_mat.min(axis=1)
     dist_mat = np.where(dist_mat == 0, 1e-12, dist_mat)
     weights = 1.0 / (dist_mat ** 2.0)
     weights /= weights.sum(axis=1, keepdims=True)
     
-    initial_values = np.dot(weights, values).reshape(ny, nx)
+    initial_values = np.dot(weights, values)
+    # Apply distance threshold of 1.5 degrees to avoid global average in far regions
+    initial_values = np.where(min_distances > 1.5, 0.0, initial_values).reshape(ny, nx)
     current_grid = initial_values.copy()
     
-    # Cellular Automata spread iterations
+    # 3x3 averaging kernel for 8-neighbor Moore neighborhood convolve
+    kernel = np.array([
+        [1.0, 1.0, 1.0],
+        [1.0, 0.0, 1.0],
+        [1.0, 1.0, 1.0]
+    ]) / 8.0
+    
+    # Vectorized Cellular Automata spread iterations
     for _ in range(steps):
-        next_grid = current_grid.copy()
-        for y in range(ny):
-            for x in range(nx):
-                neighbors = []
-                for dy in [-1, 0, 1]:
-                    for dx in [-1, 0, 1]:
-                        if dx == 0 and dy == 0:
-                            continue
-                        ny_idx, nx_idx = y + dy, x + dx
-                        if 0 <= ny_idx < ny and 0 <= nx_idx < nx:
-                            neighbors.append(current_grid[ny_idx, nx_idx])
-                
-                if neighbors:
-                    avg_neighbor = sum(neighbors) / len(neighbors)
-                    next_grid[y, x] = min(100.0, current_grid[y, x] + avg_neighbor * spread_factor)
-        current_grid = next_grid
+        avg_neighbor = convolve(current_grid, kernel, mode='constant', cval=0.0)
+        current_grid = np.minimum(100.0, current_grid + avg_neighbor * spread_factor)
         
     # Generate contour bands
     levels = [0.0, 10.0, 25.0, 50.0, 75.0, 100.0]
@@ -290,24 +297,36 @@ def run_kriging(grid_resolution=0.12):
     y = df['latitude'].values
     z = df['severity_index_pct'].values
     
-    min_lng, max_lng = df['longitude'].min() - 0.2, df['longitude'].max() + 0.2
-    min_lat, max_lat = df['latitude'].min() - 0.2, df['latitude'].max() + 0.2
-    
     boundary = load_boundary()
+    min_lng, min_lat, max_lng, max_lat = boundary.bounds
     
-    gridx = np.linspace(min_lng, max_lng, 120)
-    gridy = np.linspace(min_lat, max_lat, 120)
+    # Target resolution of ~0.08 degrees per cell for Kriging performance balance
+    resolution = 0.08
+    nx = int(np.ceil((max_lng - min_lng) / resolution))
+    ny = int(np.ceil((max_lat - min_lat) / resolution))
+    
+    gridx = np.linspace(min_lng, max_lng, nx)
+    gridy = np.linspace(min_lat, max_lat, ny)
     grid_lng_mesh, grid_lat_mesh = np.meshgrid(gridx, gridy)
     
     ok = OrdinaryKriging(
         x, y, z,
-        variogram_model='linear',
+        variogram_model='spherical',
         verbose=False,
         enable_plotting=False
     )
     
     kriging_values, ss = ok.execute('grid', gridx, gridy)
     kriging_values = np.clip(np.array(kriging_values), 0.0, 100.0)
+    
+    # Calculate distance mask to zero out cells far from sample points
+    grid_points = np.vstack([grid_lng_mesh.ravel(), grid_lat_mesh.ravel()]).T
+    points = np.column_stack((x, y))
+    dist_mat = distance_matrix(grid_points, points)
+    min_distances = dist_mat.min(axis=1).reshape(ny, nx)
+    
+    # Apply distance threshold of 1.5 degrees
+    kriging_values = np.where(min_distances > 1.5, 0.0, kriging_values)
     
     levels = [0.0, 10.0, 25.0, 50.0, 75.0, 100.0]
     
