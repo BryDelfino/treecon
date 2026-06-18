@@ -264,38 +264,6 @@ class _MapPageState extends State<MapPage> {
     }
   }
 
-  Widget _buildLayerButton({
-    required String title,
-    required bool active,
-    required IconData icon,
-    required VoidCallback onTap,
-  }) {
-    return SizedBox(
-      width: double.infinity,
-      child: ElevatedButton.icon(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: active ? _selectedColor : Colors.white,
-          foregroundColor: active ? Colors.white : Colors.black87,
-          elevation: active ? 2 : 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
-            side: BorderSide(
-              color: active ? Colors.transparent : Colors.grey.shade300,
-            ),
-          ),
-          alignment: Alignment.centerLeft,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        ),
-        onPressed: onTap,
-        icon: Icon(icon, size: 18),
-        label: Text(
-          title,
-          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -318,17 +286,6 @@ class _MapPageState extends State<MapPage> {
                 urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
                 userAgentPackageName: 'com.treecon.commander',
               ),
-              if (_countryPolygons.isNotEmpty)
-                PolygonLayer(
-                  polygons: _countryPolygons.map((poly) => Polygon(
-                    points: poly.points,
-                    color: Colors.transparent,
-                    borderColor: _selectedColor.withValues(alpha: _borderOpacity),
-                    borderStrokeWidth: _borderWidth,
-                  )).toList(),
-                ),
-              
-              // 2. Dynamic simulation contour layers
               if (_showIDW && _idwPolygons.isNotEmpty)
                 PolygonLayer(
                   polygons: _idwPolygons,
