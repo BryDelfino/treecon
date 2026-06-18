@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+pandas
+numpy
+scipy
+shapely
+geojson
+matplotlib
+pykrige
