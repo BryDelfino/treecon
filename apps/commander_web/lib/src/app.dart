@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:commander_web/src/features/auth/presentation/pages/sign_in_page.dart';
 import 'package:commander_web/src/features/map/presentation/pages/map.dart';
 
 
@@ -7,8 +8,8 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return const MaterialApp(
-      title: 'Treecon Commander',
-      home: MapPage(), 
+      title: 'Treecon Commander - Sign In',
+      home: SignInPage(), 
     );
   }
 }
