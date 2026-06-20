@@ -8,6 +8,13 @@ class HomePage extends StatelessWidget {
   Widget build(BuildContext context) {
     final user = Supabase.instance.client.auth.currentUser;
     final email = user?.email ?? 'Unknown User';
+    final Future<Map<String, dynamic>?> profileFuture = user != null
+        ? Supabase.instance.client
+            .from('users')
+            .select('role, user_name')
+            .eq('user_id', user.id)
+            .maybeSingle()
+        : Future.value(null);
 
     return Scaffold(
       backgroundColor: Colors.grey[50],
@@ -33,65 +40,80 @@ class HomePage extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const SizedBox(height: 16.0),
-              // Success Card
+              // Dynamic Success Card
               Card(
                 elevation: 2.0,
-                shadowColor: Colors.black.withOpacity(0.05),
+                shadowColor: Colors.black.withValues(alpha: 0.05),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(20.0),
                 ),
                 color: Colors.white,
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 32.0),
-                  child: Column(
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(16.0),
-                        decoration: BoxDecoration(
-                          color: Colors.green[50],
-                          shape: BoxShape.circle,
-                        ),
-                        child: Icon(
-                          Icons.verified_user_rounded,
-                          color: Colors.green[600],
-                          size: 48,
-                        ),
-                      ),
-                      const SizedBox(height: 20.0),
-                      const Text(
-                        'Authenticated Successfully',
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black87,
-                        ),
-                      ),
-                      const SizedBox(height: 8.0),
-                      Text(
-                        email,
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.grey[600],
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      const SizedBox(height: 16.0),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
-                        decoration: BoxDecoration(
-                          color: Colors.green[100],
-                          borderRadius: BorderRadius.circular(100.0),
-                        ),
-                        child: Text(
-                          'Role: Community',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.green[800],
+                  child: FutureBuilder<Map<String, dynamic>?>(
+                    future: profileFuture,
+                    builder: (context, snapshot) {
+                      final profile = snapshot.data;
+                      final userName = profile?['user_name'] as String? ?? 'User';
+                      final rawRole = profile?['role'] as String? ?? 'COMMUNITY';
+                      // Format role to Title Case (e.g., 'COMMUNITY' -> 'Community')
+                      final formattedRole = rawRole.isNotEmpty 
+                          ? '${rawRole[0].toUpperCase()}${rawRole.substring(1).toLowerCase()}'
+                          : 'Community';
+
+                      final isLoading = snapshot.connectionState == ConnectionState.waiting;
+
+                      return Column(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(16.0),
+                            decoration: BoxDecoration(
+                              color: Colors.green[50],
+                              shape: BoxShape.circle,
+                            ),
+                            child: Icon(
+                              Icons.verified_user_rounded,
+                              color: Colors.green[600],
+                              size: 48,
+                            ),
                           ),
-                        ),
-                      ),
-                    ],
+                          const SizedBox(height: 20.0),
+                          Text(
+                            isLoading ? 'Loading profile...' : 'Welcome, $userName',
+                            style: const TextStyle(
+                              fontSize: 20,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black87,
+                            ),
+                          ),
+                          const SizedBox(height: 8.0),
+                          Text(
+                            email,
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.grey[600],
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                          const SizedBox(height: 16.0),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+                            decoration: BoxDecoration(
+                              color: isLoading ? Colors.grey[200] : Colors.green[100],
+                              borderRadius: BorderRadius.circular(100.0),
+                            ),
+                            child: Text(
+                              isLoading ? 'Role: --' : 'Role: $formattedRole',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: isLoading ? Colors.grey[600] : Colors.green[800],
+                              ),
+                            ),
+                          ),
+                        ],
+                      );
+                    },
                   ),
                 ),
               ),
@@ -164,7 +186,7 @@ class HomePage extends StatelessWidget {
         leading: Container(
           padding: const EdgeInsets.all(8.0),
           decoration: BoxDecoration(
-            color: color.withOpacity(0.1),
+            color: color.withValues(alpha: 0.1),
             borderRadius: BorderRadius.circular(10.0),
           ),
           child: Icon(icon, color: color),
