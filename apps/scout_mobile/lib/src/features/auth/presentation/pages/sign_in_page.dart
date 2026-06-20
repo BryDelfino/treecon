@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:core/core.dart';
 import 'package:shared_services/shared_services.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 class SignInPage extends StatefulWidget {
   const SignInPage({super.key});
@@ -164,15 +165,38 @@ class _SignInPageState extends State<SignInPage> {
     }
   }
 
-  /// Trigger Google OAuth Sign In
+  /// Trigger Google OAuth Sign In using native SDK
   Future<void> _handleGoogleSignIn() async {
     setState(() {
       _isLoading = true;
     });
 
     try {
-      await Supabase.instance.client.auth.signInWithOAuth(
-        OAuthProvider.google,
+      // Initialize GoogleSignIn
+      final GoogleSignIn googleSignIn = GoogleSignIn();
+      
+      final googleUser = await googleSignIn.signIn();
+      if (googleUser == null) {
+        // User cancelled the native Google Sign In sheet
+        setState(() {
+          _isLoading = false;
+        });
+        return;
+      }
+
+      final googleAuth = await googleUser.authentication;
+      final idToken = googleAuth.idToken;
+      final accessToken = googleAuth.accessToken;
+
+      if (idToken == null) {
+        throw const AuthException('Could not retrieve Google ID Token.');
+      }
+
+      // Sign in to Supabase with the ID Token
+      await Supabase.instance.client.auth.signInWithIdToken(
+        provider: OAuthProvider.google,
+        idToken: idToken,
+        accessToken: accessToken,
       );
     } on AuthException catch (e) {
       _showToast(e.message);
