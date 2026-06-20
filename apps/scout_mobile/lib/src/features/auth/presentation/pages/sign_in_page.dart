@@ -51,12 +51,13 @@ class _SignInPageState extends State<SignInPage> {
                 user.email?.split('@').first ??
                 'New User';
 
+            final defaultAvatar = 'https://ui-avatars.com/api/?name=${Uri.encodeComponent(fullName)}&background=4CAF50&color=FFFFFF&size=128';
             await Supabase.instance.client.from('users').insert({
               'user_id': user.id,
               'role': 'COMMUNITY',
               'user_name': fullName,
               'email': user.email,
-              'avatar_url': user.userMetadata?['avatar_url'],
+              'avatar_url': user.userMetadata?['avatar_url'] ?? defaultAvatar,
             });
           }
         } catch (e) {
@@ -259,24 +260,7 @@ class _SignInPageState extends State<SignInPage> {
     );
   }
 
-  void _showSignUpPlaceholder() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16.0)),
-        title: const Text('Registration'),
-        content: const Text(
-          'Scout registration is a placeholder. New user profiles are automatically created when signing in via Google OAuth or via administrator invitaton.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Dismiss', style: TextStyle(color: Colors.green)),
-          ),
-        ],
-      ),
-    );
-  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -498,7 +482,7 @@ class _SignInPageState extends State<SignInPage> {
                         style: TextStyle(color: Colors.grey[600]),
                       ),
                       TextButton(
-                        onPressed: _isLoading ? null : _showSignUpPlaceholder,
+                        onPressed: _isLoading ? null : () => Navigator.of(context).pushNamed('/signup'),
                         child: const Text(
                           'Sign Up',
                           style: TextStyle(
