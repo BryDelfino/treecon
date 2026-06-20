@@ -11,7 +11,7 @@ class HomePage extends StatelessWidget {
     final Future<Map<String, dynamic>?> profileFuture = user != null
         ? Supabase.instance.client
             .from('users')
-            .select('role, user_name')
+            .select('role, user_name, avatar_url')
             .eq('user_id', user.id)
             .maybeSingle()
         : Future.value(null);
@@ -56,6 +56,10 @@ class HomePage extends StatelessWidget {
                       final profile = snapshot.data;
                       final userName = profile?['user_name'] as String? ?? 'User';
                       final rawRole = profile?['role'] as String? ?? 'COMMUNITY';
+                      final avatarUrl = profile?['avatar_url'] as String?;
+                      final defaultAvatar = 'https://ui-avatars.com/api/?name=${Uri.encodeComponent(userName)}&background=4CAF50&color=FFFFFF&size=128';
+                      final displayAvatarUrl = avatarUrl != null && avatarUrl.isNotEmpty ? avatarUrl : defaultAvatar;
+
                       // Format role to Title Case (e.g., 'COMMUNITY' -> 'Community')
                       final formattedRole = rawRole.isNotEmpty 
                           ? '${rawRole[0].toUpperCase()}${rawRole.substring(1).toLowerCase()}'
@@ -66,15 +70,20 @@ class HomePage extends StatelessWidget {
                       return Column(
                         children: [
                           Container(
-                            padding: const EdgeInsets.all(16.0),
                             decoration: BoxDecoration(
-                              color: Colors.green[50],
                               shape: BoxShape.circle,
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withValues(alpha: 0.08),
+                                  blurRadius: 10,
+                                  offset: const Offset(0, 4),
+                                ),
+                              ],
                             ),
-                            child: Icon(
-                              Icons.verified_user_rounded,
-                              color: Colors.green[600],
-                              size: 48,
+                            child: CircleAvatar(
+                              radius: 40,
+                              backgroundColor: Colors.green[50],
+                              backgroundImage: NetworkImage(displayAvatarUrl),
                             ),
                           ),
                           const SizedBox(height: 20.0),
