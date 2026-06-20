@@ -56,6 +56,7 @@ class _SignInPageState extends State<SignInPage> {
               'role': 'COMMUNITY',
               'user_name': fullName,
               'email': user.email,
+              'avatar_url': user.userMetadata?['avatar_url'],
             });
           }
         } catch (e) {
