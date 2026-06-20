@@ -131,7 +131,7 @@ class _SignInPageState extends State<SignInPage> {
       }
 
       final String? role = userData['role'];
-      if (role != 'expert') {
+      if (role != 'EXPERT') {
         await Supabase.instance.client.auth.signOut();
         _showToast('Access denied. You do not have expert privileges.');
         return false;
