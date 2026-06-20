@@ -37,6 +37,31 @@ class _SignInPageState extends State<SignInPage> {
           _isLoading = true;
         });
 
+        // Ensure user has a profile in public.users (Scout Mobile automatically registers them as COMMUNITY)
+        try {
+          final existingProfile = await Supabase.instance.client
+              .from('users')
+              .select('role')
+              .eq('user_id', user.id)
+              .maybeSingle();
+
+          if (existingProfile == null) {
+            final fullName = user.userMetadata?['full_name'] ??
+                user.userMetadata?['name'] ??
+                user.email?.split('@').first ??
+                'New User';
+
+            await Supabase.instance.client.from('users').insert({
+              'user_id': user.id,
+              'role': 'COMMUNITY',
+              'user_name': fullName,
+              'email': user.email,
+            });
+          }
+        } catch (e) {
+          debugPrint('Error creating user profile: $e');
+        }
+
         final hasAccess = await _validateUserRole(user);
         
         if (hasAccess && mounted) {
@@ -65,8 +90,10 @@ class _SignInPageState extends State<SignInPage> {
 
   void _showToast(String message, {bool isError = true}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).clearSnackBars();
-    ScaffoldMessenger.of(context).showSnackBar(
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    
+    messenger.showSnackBar(
       SnackBar(
         content: Row(
           children: [
@@ -86,7 +113,7 @@ class _SignInPageState extends State<SignInPage> {
             IconButton(
               icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 18),
               onPressed: () {
-                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                messenger.hideCurrentSnackBar();
               },
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(),
@@ -173,20 +200,21 @@ class _SignInPageState extends State<SignInPage> {
 
     try {
       // Initialize GoogleSignIn
-      final GoogleSignIn googleSignIn = GoogleSignIn();
+      final GoogleSignIn googleSignIn = GoogleSignIn.instance;
+      const clientId = String.fromEnvironment('GOOGLE_WEB_CLIENT_ID');
+      debugPrint('Initializing GoogleSignIn with serverClientId: "$clientId"');
+      await googleSignIn.initialize(
+        serverClientId: clientId.isEmpty ? null : clientId,
+      );
       
-      final googleUser = await googleSignIn.signIn();
-      if (googleUser == null) {
-        // User cancelled the native Google Sign In sheet
-        setState(() {
-          _isLoading = false;
-        });
-        return;
-      }
-
-      final googleAuth = await googleUser.authentication;
+      // Clear cached state to force a fresh Google prompt (resolves stale credential errors)
+      try {
+        await googleSignIn.signOut();
+      } catch (_) {}
+      
+      final googleUser = await googleSignIn.authenticate();
+      final googleAuth = googleUser.authentication;
       final idToken = googleAuth.idToken;
-      final accessToken = googleAuth.accessToken;
 
       if (idToken == null) {
         throw const AuthException('Could not retrieve Google ID Token.');
@@ -196,7 +224,6 @@ class _SignInPageState extends State<SignInPage> {
       await Supabase.instance.client.auth.signInWithIdToken(
         provider: OAuthProvider.google,
         idToken: idToken,
-        accessToken: accessToken,
       );
     } on AuthException catch (e) {
       _showToast(e.message);
@@ -204,7 +231,8 @@ class _SignInPageState extends State<SignInPage> {
         _isLoading = false;
       });
     } catch (e) {
-      _showToast('Google login failed. Please try again.');
+      debugPrint('Google Sign-In Error: $e');
+      _showToast('Google login failed: $e');
       setState(() {
         _isLoading = false;
       });
@@ -251,7 +279,6 @@ class _SignInPageState extends State<SignInPage> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     
     return Scaffold(
       backgroundColor: Colors.white,
