@@ -241,27 +241,6 @@ class _SignInPageState extends State<SignInPage> {
     }
   }
 
-  void _showForgotPasswordPlaceholder() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16.0)),
-        title: const Text('Reset Password'),
-        content: const Text(
-          'A password reset request feature is a placeholder. In a production build, it will trigger an email containing a recovery link.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Dismiss', style: TextStyle(color: Colors.green)),
-          ),
-        ],
-      ),
-    );
-  }
-
-
-
   @override
   Widget build(BuildContext context) {
     
@@ -381,23 +360,7 @@ class _SignInPageState extends State<SignInPage> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 12.0),
-
-                  // Forgot Password
-                  Align(
-                    alignment: Alignment.centerRight,
-                    child: TextButton(
-                      onPressed: _isLoading ? null : _showForgotPasswordPlaceholder,
-                      child: const Text(
-                        'Forgot Password?',
-                        style: TextStyle(
-                          color: Colors.green,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 24.0),
+                  const SizedBox(height: 32.0),
 
                   // Sign In Button
                   FilledButton(
