@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:scout_mobile/src/features/auth/presentation/pages/sign_in_page.dart';
 import 'package:scout_mobile/src/features/auth/presentation/pages/sign_up_page.dart';
-import 'package:scout_mobile/src/features/home/presentation/pages/home_page.dart';
+import 'package:scout_mobile/src/features/observations/presentation/pages/observation_page.dart';
+import 'package:scout_mobile/src/features/profile/presentation/pages/profile_page.dart';
+import 'package:scout_mobile/src/features/map/presentation/pages/map_page.dart';
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
@@ -19,7 +21,9 @@ class MyApp extends StatelessWidget {
       routes: {
         '/': (context) => const SignInPage(),
         '/signup': (context) => const SignUpPage(),
-        '/home': (context) => const HomePage(),
+        '/observations': (context) => const ObservationPage(),
+        '/map' : (context) => const MapPage(),
+        '/profile': (context) => const ProfilePage(),
       },
     );
   }
