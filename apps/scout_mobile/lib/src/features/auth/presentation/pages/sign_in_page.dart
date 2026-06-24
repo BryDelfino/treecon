@@ -69,7 +69,7 @@ class _SignInPageState extends State<SignInPage> {
         if (hasAccess && mounted) {
           _showToast('Welcome, ${_username ?? "User"}', isError: false);
           // Navigate to the main screen
-          Navigator.of(context).pushReplacementNamed('/home');
+          Navigator.of(context).pushReplacementNamed('/observations');
         } else {
           _isNavigating = false;
           if (mounted) {
