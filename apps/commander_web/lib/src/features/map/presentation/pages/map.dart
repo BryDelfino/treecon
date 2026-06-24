@@ -51,8 +51,8 @@ class _MapPageState extends State<MapPage> {
       final Map<String, dynamic> geoJson = json.decode(jsonString);
       final List<Polygon> polygons = [];
 
-      final List<dynamic> features = geoJson['features'] as List<dynamic>;
-      for (final feature in features) {
+      final List<Map<String, dynamic>> features = (geoJson['features'] as List<dynamic>).cast<Map<String, dynamic>>();
+      for (final Map<String, dynamic> feature in features) {
         final Map<String, dynamic> geometry = feature['geometry'] as Map<String, dynamic>;
         final String geomType = geometry['type'] as String;
 
@@ -62,8 +62,9 @@ class _MapPageState extends State<MapPage> {
             for (final ringData in polygonData as List<dynamic>) {
               final List<LatLng> points = [];
               for (final coord in ringData as List<dynamic>) {
-                final double lng = (coord[0] as num).toDouble();
-                final double lat = (coord[1] as num).toDouble();
+                final List<dynamic> coordList = coord as List<dynamic>;
+                final double lng = (coordList[0] as num).toDouble();
+                final double lat = (coordList[1] as num).toDouble();
                 points.add(LatLng(lat, lng));
               }
               if (points.isNotEmpty) {
@@ -76,8 +77,9 @@ class _MapPageState extends State<MapPage> {
           for (final ringData in coordinates) {
             final List<LatLng> points = [];
             for (final coord in ringData as List<dynamic>) {
-              final double lng = (coord[0] as num).toDouble();
-              final double lat = (coord[1] as num).toDouble();
+              final List<dynamic> coordList = coord as List<dynamic>;
+              final double lng = (coordList[0] as num).toDouble();
+              final double lat = (coordList[1] as num).toDouble();
               points.add(LatLng(lat, lng));
             }
             if (points.isNotEmpty) {
@@ -224,7 +226,7 @@ class _MapPageState extends State<MapPage> {
               }
               if (points.isNotEmpty) {
                 // ignore: deprecated_member_use
-                final Color opacityColor = baseColor.withOpacity(_fillOpacity * 1.5 > 1.0 ? 1.0 : _fillOpacity * 1.5);
+                final Color opacityColor = baseColor.withValues(alpha: _fillOpacity * 1.5 > 1.0 ? 1.0 : _fillOpacity * 1.5);
                 parsedList.add(Polygon(
                   points: points,
                   color: opacityColor,
@@ -244,7 +246,7 @@ class _MapPageState extends State<MapPage> {
                 }
                 if (points.isNotEmpty) {
                   // ignore: deprecated_member_use
-                  final Color opacityColor = baseColor.withOpacity(_fillOpacity * 1.5 > 1.0 ? 1.0 : _fillOpacity * 1.5);
+                  final Color opacityColor = baseColor.withValues(alpha: _fillOpacity * 1.5 > 1.0 ? 1.0 : _fillOpacity * 1.5);
                   parsedList.add(Polygon(
                     points: points,
                     color: opacityColor,
@@ -264,46 +266,18 @@ class _MapPageState extends State<MapPage> {
     }
   }
 
-  Widget _buildLayerButton({
-    required String title,
-    required bool active,
-    required IconData icon,
-    required VoidCallback onTap,
-  }) {
-    return SizedBox(
-      width: double.infinity,
-      child: ElevatedButton.icon(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: active ? _selectedColor : Colors.white,
-          foregroundColor: active ? Colors.white : Colors.black87,
-          elevation: active ? 2 : 0,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
-            side: BorderSide(
-              color: active ? Colors.transparent : Colors.grey.shade300,
-            ),
-          ),
-          alignment: Alignment.centerLeft,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        ),
-        onPressed: onTap,
-        icon: Icon(icon, size: 18),
-        label: Text(
-          title,
-          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
-        ),
-      ),
-    );
-  }
+
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Treecon Commander - Spatial Map"),
-        backgroundColor: Colors.green.shade700,
-        foregroundColor: Colors.white,
-        elevation: 2,
+        title: const Text(
+          "Spatial Map",
+          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87),
+        ),
+        backgroundColor: Colors.white,
+        elevation: 1,
       ),
       body: Stack(
         children: [
@@ -354,7 +328,7 @@ class _MapPageState extends State<MapPage> {
                 child: Card(
                   elevation: 8,
                   // ignore: deprecated_member_use
-                  shadowColor: Colors.black.withOpacity(0.3),
+                  shadowColor: Colors.black.withValues(alpha: 0.3),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(12),
                   ),
@@ -459,7 +433,7 @@ class _MapPageState extends State<MapPage> {
                   child: Card(
                     elevation: 10,
                     // ignore: deprecated_member_use
-                    shadowColor: Colors.black.withOpacity(0.3),
+                    shadowColor: Colors.black.withValues(alpha: 0.3),
                     shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(12),
                     ),
@@ -471,11 +445,11 @@ class _MapPageState extends State<MapPage> {
                           Row(
                             mainAxisAlignment: MainAxisAlignment.spaceBetween,
                             children: [
-                              Row(
+                              const Row(
                                 children: [
                                   Icon(Icons.history_toggle_off, color: _selectedColor),
-                                  const SizedBox(width: 8),
-                                  const Text(
+                                  SizedBox(width: 8),
+                                  Text(
                                     "CA Spread Steps (Forecast Interval)",
                                     style: TextStyle(
                                       fontWeight: FontWeight.bold,
@@ -487,13 +461,12 @@ class _MapPageState extends State<MapPage> {
                               Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                                 decoration: BoxDecoration(
-                                  // ignore: deprecated_member_use
-                                  color: _selectedColor.withOpacity(0.15),
-                                  borderRadius: BorderRadius.circular(12),
+                                  color: _selectedColor.withValues(alpha: 0.15),
+                                  borderRadius: const BorderRadius.all(Radius.circular(12)),
                                 ),
                                 child: Text(
                                   "Step $_caSteps",
-                                  style: TextStyle(
+                                  style: const TextStyle(
                                     color: _selectedColor,
                                     fontWeight: FontWeight.bold,
                                     fontSize: 12,
