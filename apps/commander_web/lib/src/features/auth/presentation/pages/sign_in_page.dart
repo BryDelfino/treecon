@@ -209,7 +209,7 @@ class _SignInPageState extends State<SignInPage> {
               width: 460,
               child: Card(
                 elevation: 4.0,
-                shadowColor: Colors.black.withOpacity(0.1),
+                shadowColor: Colors.black.withValues(alpha: 0.1),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(16.0),
                 ),
