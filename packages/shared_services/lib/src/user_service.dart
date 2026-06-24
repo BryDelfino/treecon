@@ -32,13 +32,15 @@ class UserService {
   }) async {
     // Generate a unique filename using timestamp
     final fileName = '$userId-${DateTime.now().millisecondsSinceEpoch}.$fileExtension';
-    final filePath = 'avatars/$fileName';
+    final filePath = fileName;
+
+    final contentType = 'image/jpeg';
 
     await _client.storage.from('avatars').uploadBinary(
       filePath,
       bytes,
-      fileOptions: const FileOptions(
-        contentType: 'image/*',
+      fileOptions: FileOptions(
+        contentType: contentType,
         upsert: true,
       ),
     );
