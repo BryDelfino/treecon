@@ -28,13 +28,28 @@ def load_boundary():
         data = json.load(f)
     # If the file is a FeatureCollection, union all geometries.
     if data.get('type') == 'FeatureCollection' and 'features' in data:
-        geometries = [shape(feature['geometry']) for feature in data['features'] if 'geometry' in feature]
+        geometries = []
+        for feature in data['features']:
+            if 'geometry' in feature:
+                geom = shape(feature['geometry'])
+                if not geom.is_valid:
+                    geom = geom.buffer(0)
+                geometries.append(geom)
         combined = unary_union(geometries)
     else:
         # Fallback to direct geometry field
         combined = shape(data['geometry'])
+        if not combined.is_valid:
+            combined = combined.buffer(0)
+            
+    if not combined.is_valid:
+        combined = combined.buffer(0)
+        
     # Simplify to reduce complexity while preserving topology
-    return combined.simplify(0.005, preserve_topology=True)
+    simplified = combined.simplify(0.005, preserve_topology=True)
+    if not simplified.is_valid:
+        simplified = simplified.buffer(0)
+    return simplified
 
 def _filter_polygons(geom):
     if geom.is_empty:
@@ -46,6 +61,16 @@ def _filter_polygons(geom):
         if polys:
             return unary_union(polys)
     return None
+
+def _safe_intersection(geom_a, geom_b):
+    if not geom_a.is_valid:
+        geom_a = geom_a.buffer(0)
+    if not geom_b.is_valid:
+        geom_b = geom_b.buffer(0)
+    try:
+        return geom_a.intersection(geom_b)
+    except Exception:
+        return geom_a.buffer(0.0001).intersection(geom_b.buffer(0.0001))
 
 def get_color_for_value(val):
     if val < 10.0:
@@ -130,7 +155,7 @@ def run_idw(grid_resolution=0.12, power=2.0):
 
             if polygons:
                 merged_poly = unary_union(polygons)
-                clipped_poly = _filter_polygons(merged_poly.intersection(boundary))
+                clipped_poly = _filter_polygons(_safe_intersection(merged_poly, boundary))
                 if clipped_poly is not None and not clipped_poly.is_empty:
                     features.append(geojson.Feature(
                         geometry=clipped_poly,
@@ -157,7 +182,7 @@ def run_idw(grid_resolution=0.12, power=2.0):
 
             if polygons:
                 merged_poly = unary_union(polygons)
-                clipped_poly = _filter_polygons(merged_poly.intersection(boundary))
+                clipped_poly = _filter_polygons(_safe_intersection(merged_poly, boundary))
                 if clipped_poly is not None and not clipped_poly.is_empty:
                     features.append(geojson.Feature(
                         geometry=clipped_poly,
@@ -247,7 +272,7 @@ def run_ca_simulation(steps=5, grid_resolution=0.12, spread_factor=0.08):
 
             if polygons:
                 merged_poly = unary_union(polygons)
-                clipped_poly = _filter_polygons(merged_poly.intersection(boundary))
+                clipped_poly = _filter_polygons(_safe_intersection(merged_poly, boundary))
                 if clipped_poly is not None and not clipped_poly.is_empty:
                     features.append(geojson.Feature(
                         geometry=clipped_poly,
@@ -359,7 +384,7 @@ def run_kriging(grid_resolution=0.12):
 
             if polygons:
                 merged_poly = unary_union(polygons)
-                clipped_poly = _filter_polygons(merged_poly.intersection(boundary))
+                clipped_poly = _filter_polygons(_safe_intersection(merged_poly, boundary))
                 if clipped_poly is not None and not clipped_poly.is_empty:
                     features.append(geojson.Feature(
                         geometry=clipped_poly,
@@ -385,7 +410,7 @@ def run_kriging(grid_resolution=0.12):
 
             if polygons:
                 merged_poly = unary_union(polygons)
-                clipped_poly = _filter_polygons(merged_poly.intersection(boundary))
+                clipped_poly = _filter_polygons(_safe_intersection(merged_poly, boundary))
                 if clipped_poly is not None and not clipped_poly.is_empty:
                     features.append(geojson.Feature(
                         geometry=clipped_poly,
