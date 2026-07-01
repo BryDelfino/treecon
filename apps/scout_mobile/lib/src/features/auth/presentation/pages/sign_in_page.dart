@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:core/core.dart';
 import 'package:shared_services/shared_services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:scout_mobile/src/features/observations/data/observation_local_db.dart';
 
 class SignInPage extends StatefulWidget {
   const SignInPage({super.key});
@@ -70,6 +71,26 @@ class _SignInPageState extends State<SignInPage> {
           _showToast('Welcome, ${_username ?? "User"}', isError: false);
           // Navigate to the main screen
           Navigator.of(context).pushReplacementNamed('/observations');
+          
+          // Trigger automatic background sync of any locally stored observations
+          // since the user is now authenticated and connected.
+          try {
+            // Import local DB and trigger sync
+            unawaited(ObservationLocalDb.instance.getPending().then((pending) async {
+              if (pending.isNotEmpty) {
+                // Trigger background database sync: we can just call markUploaded on success.
+                // Or let the system run the syncing directly here or when ObservationPage launches.
+                // To keep database operations encapsulated, we'll let the user's redirection to ObservationPage trigger it
+                // since ObservationPage registers an onConnectivityChanged/initial state sync.
+                // However, since they just signed in, let's explicitly update user_id on cached observations
+                // so they get associated with the newly authenticated user.
+                final db = await ObservationLocalDb.instance.database;
+                await db.update('cached_observations', {'user_id': user.id});
+              }
+            }));
+          } catch (syncError) {
+            debugPrint('Background sync trigger failed: $syncError');
+          }
         } else {
           _isNavigating = false;
           if (mounted) {
