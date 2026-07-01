@@ -1,10 +1,11 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter/services.dart' show rootBundle, SystemNavigator;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
+import 'package:scout_mobile/src/core/services/network_service.dart';
 
 class MapPage extends StatefulWidget {
   const MapPage({super.key});
@@ -22,6 +23,7 @@ class _MapPageState extends State<MapPage> {
   bool _isIdwLoading = false;
   bool _isCaLoading = false;
   bool _isKrigingLoading = false;
+  DateTime? _lastBackPress;
 
   // Customization state (fixed defaults)
   static const double _fillOpacity = 0.25;
@@ -38,10 +40,14 @@ class _MapPageState extends State<MapPage> {
   @override
   void initState() {
     super.initState();
-    _loadCountryBoundary();
-    _fetchIDW();
-    _fetchForecast(_caSteps);
-    _fetchKriging();
+    if (NetworkService.instance.isOnline) {
+      _loadCountryBoundary();
+      _fetchIDW();
+      _fetchForecast(_caSteps);
+      _fetchKriging();
+    } else {
+      _isLoading = false;
+    }
   }
 
   // Loads the country boundary once and caches polygons
@@ -442,160 +448,220 @@ class _MapPageState extends State<MapPage> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text(
-          "Spatial Map",
-          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
-        ),
-        backgroundColor: Colors.green[700],
-        foregroundColor: Colors.white,
-        elevation: 2,
-      ),
-      body: Stack(
-        children: [
-          FlutterMap(
-            options: const MapOptions(
-              initialCenter: LatLng(12.8797, 121.7740),
-              initialZoom: 6,
-              minZoom: 5,
+  Widget _buildOfflinePlaceholder() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.cloud_off_rounded, size: 80, color: Colors.grey[400]),
+            const SizedBox(height: 20),
+            const Text(
+              "Map Unavailable Offline",
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black87),
+              textAlign: TextAlign.center,
             ),
-            children: [
-              TileLayer(
-                urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
-                userAgentPackageName: 'com.treecon.scout',
-              ),
-              if (_countryPolygons.isNotEmpty)
-                PolygonLayer(
-                  polygons: _countryPolygons.map((poly) => Polygon(
-                    points: poly.points,
-                    color: Colors.transparent,
-                    borderColor: _selectedColor.withValues(alpha: _borderOpacity),
-                    borderStrokeWidth: _borderWidth,
-                  )).toList(),
-                ),
-
-              // Simulation contour layers
-              if (_showIDW && _idwPolygons.isNotEmpty)
-                PolygonLayer(
-                  polygons: _idwPolygons,
-                ),
-              if (_showCA && _caPolygons.isNotEmpty)
-                PolygonLayer(
-                  polygons: _caPolygons,
-                ),
-              if (_showKriging && _krigingPolygons.isNotEmpty)
-                PolygonLayer(
-                  polygons: _krigingPolygons,
-                ),
-            ],
-          ),
-
-          // Floating button to open bottom sheet
-          if (!_isLoading)
-            Positioned(
-              bottom: 16,
-              right: 16,
-              child: FloatingActionButton(
-                onPressed: () => _showSettingsBottomSheet(context),
-                backgroundColor: Colors.green[700],
-                foregroundColor: Colors.white,
-                child: const Icon(Icons.layers_outlined),
-              ),
-            ),
-
-          // Progress Overlay
-          if (_isLoading || _isIdwLoading || _isCaLoading || _isKrigingLoading)
-            Positioned(
-              top: 16,
-              left: 16,
-              right: 16,
-              child: Card(
-                elevation: 4,
-                color: Colors.white,
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const SizedBox(
-                        height: 20,
-                        width: 20,
-                        child: CircularProgressIndicator(color: Colors.green, strokeWidth: 2),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: Text(
-                          _isLoading
-                              ? "Loading boundary map..."
-                              : (_isIdwLoading && _isCaLoading && _isKrigingLoading)
-                                  ? "Fetching simulation layers..."
-                                  : _isIdwLoading
-                                      ? "Fetching IDW contours..."
-                                      : _isCaLoading
-                                          ? "Fetching CA forecast..."
-                                          : "Fetching Kriging contours...",
-                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-        ],
-      ),
-      bottomNavigationBar: Container(
-        decoration: BoxDecoration(
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.05),
-              blurRadius: 10,
-              offset: const Offset(0, -2),
-            ),
-          ],
-        ),
-        child: BottomNavigationBar(
-          currentIndex: 1,
-          onTap: (index) {
-            if (index == 0) {
-              Navigator.of(context).pushReplacementNamed('/observations');
-            } else if (index == 1) {
-              // already on map
-            } else if (index == 2) {
-              Navigator.of(context).pushReplacementNamed('/profile');
-            }
-          },
-          type: BottomNavigationBarType.fixed,
-          backgroundColor: Colors.white,
-          selectedItemColor: Colors.green[700],
-          unselectedItemColor: Colors.grey[500],
-          selectedFontSize: 12.0,
-          unselectedFontSize: 12.0,
-          selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold),
-          unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500),
-          elevation: 0,
-          items: const [
-            BottomNavigationBarItem(
-              icon: Icon(Icons.assignment_outlined),
-              activeIcon: Icon(Icons.assignment),
-              label: 'Observations',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.map_outlined),
-              activeIcon: Icon(Icons.map),
-              label: 'Map',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.person_outline),
-              activeIcon: Icon(Icons.person),
-              label: 'Profile',
+            const SizedBox(height: 12),
+            Text(
+              "The spread tracking simulation relies on an internet connection to run forecast calculations. Connect to the internet to use the map features.",
+              style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+              textAlign: TextAlign.center,
             ),
           ],
         ),
       ),
     );
   }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<bool>(
+      stream: NetworkService.instance.onConnectivityChanged,
+      initialData: NetworkService.instance.isOnline,
+      builder: (context, snapshot) {
+        final isOnline = snapshot.data ?? false;
+        
+        return PopScope(
+          canPop: false,
+          onPopInvokedWithResult: (didPop, _) {
+            if (didPop) return;
+            final now = DateTime.now();
+            if (_lastBackPress != null && now.difference(_lastBackPress!) < const Duration(seconds: 2)) {
+              SystemNavigator.pop();
+            } else {
+              _lastBackPress = now;
+              ScaffoldMessenger.of(context).clearSnackBars();
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: const Text('Press back again to exit'),
+                  duration: const Duration(seconds: 2),
+                  backgroundColor: Colors.grey[800],
+                  behavior: SnackBarBehavior.floating,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              );
+            }
+          },
+          child: Scaffold(
+            appBar: AppBar(
+              automaticallyImplyLeading: false,
+              title: const Text(
+                "Spatial Map",
+                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+              ),
+              backgroundColor: Colors.green[700],
+              foregroundColor: Colors.white,
+              elevation: 2,
+            ),
+          body: !isOnline
+              ? _buildOfflinePlaceholder()
+              : Stack(
+                  children: [
+                    FlutterMap(
+                      options: const MapOptions(
+                        initialCenter: LatLng(12.8797, 121.7740),
+                        initialZoom: 6,
+                        minZoom: 5,
+                      ),
+                      children: [
+                        TileLayer(
+                          urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+                          userAgentPackageName: 'com.treecon.scout',
+                        ),
+                        if (_countryPolygons.isNotEmpty)
+                          PolygonLayer(
+                            polygons: _countryPolygons.map((poly) => Polygon(
+                              points: poly.points,
+                              color: Colors.transparent,
+                              borderColor: _selectedColor.withValues(alpha: _borderOpacity),
+                              borderStrokeWidth: _borderWidth,
+                            )).toList(),
+                          ),
+
+                        // Simulation contour layers
+                        if (_showIDW && _idwPolygons.isNotEmpty)
+                          PolygonLayer(
+                            polygons: _idwPolygons,
+                          ),
+                        if (_showCA && _caPolygons.isNotEmpty)
+                          PolygonLayer(
+                            polygons: _caPolygons,
+                          ),
+                        if (_showKriging && _krigingPolygons.isNotEmpty)
+                          PolygonLayer(
+                            polygons: _krigingPolygons,
+                          ),
+                      ],
+                    ),
+
+                    // Floating button to open bottom sheet
+                    if (!_isLoading)
+                      Positioned(
+                        bottom: 16,
+                        right: 16,
+                        child: FloatingActionButton(
+                          onPressed: () => _showSettingsBottomSheet(context),
+                          backgroundColor: Colors.green[700],
+                          foregroundColor: Colors.white,
+                          child: const Icon(Icons.layers_outlined),
+                        ),
+                      ),
+
+                    // Progress Overlay
+                    if (_isLoading || _isIdwLoading || _isCaLoading || _isKrigingLoading)
+                      Positioned(
+                        top: 16,
+                        left: 16,
+                        right: 16,
+                        child: Card(
+                          elevation: 4,
+                          color: Colors.white,
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const SizedBox(
+                                  height: 20,
+                                  width: 20,
+                                  child: CircularProgressIndicator(color: Colors.green, strokeWidth: 2),
+                                ),
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: Text(
+                                    _isLoading
+                                        ? "Loading boundary map..."
+                                        : (_isIdwLoading && _isCaLoading && _isKrigingLoading)
+                                            ? "Fetching simulation layers..."
+                                            : _isIdwLoading
+                                                ? "Fetching IDW contours..."
+                                                : _isCaLoading
+                                                    ? "Fetching CA forecast..."
+                                                    : "Fetching Kriging contours...",
+                                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+          bottomNavigationBar: Container(
+            decoration: BoxDecoration(
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.05),
+                  blurRadius: 10,
+                  offset: const Offset(0, -2),
+                ),
+              ],
+            ),
+            child: BottomNavigationBar(
+              currentIndex: 1,
+              onTap: (index) {
+                if (index == 0) {
+                  Navigator.of(context).pushReplacementNamed('/observations');
+                } else if (index == 1) {
+                  // already on map
+                } else if (index == 2) {
+                  Navigator.of(context).pushReplacementNamed('/profile');
+                }
+              },
+              type: BottomNavigationBarType.fixed,
+              backgroundColor: Colors.white,
+              selectedItemColor: Colors.green[700],
+              unselectedItemColor: Colors.grey[500],
+              selectedFontSize: 12.0,
+              unselectedFontSize: 12.0,
+              selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold),
+              unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500),
+              elevation: 0,
+              items: const [
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.assignment_outlined),
+                  activeIcon: Icon(Icons.assignment),
+                  label: 'Observations',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.map_outlined),
+                  activeIcon: Icon(Icons.map),
+                  label: 'Map',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.person_outline),
+                  activeIcon: Icon(Icons.person),
+                  label: 'Profile',
+                ),
+              ],
+            ),
+          ),
+          ),  // closes Scaffold
+        );  // closes PopScope
+      },
+    );
+  }
 }
+
