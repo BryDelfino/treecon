@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:core/core.dart';
 import 'package:shared_services/shared_services.dart';
+import 'package:scout_mobile/src/core/services/network_service.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -25,12 +27,15 @@ class _ProfilePageState extends State<ProfilePage> {
 
   Map<String, dynamic>? _profile;
   late final UserService _userService;
+  DateTime? _lastBackPress;
 
   @override
   void initState() {
     super.initState();
     _userService = UserService(Supabase.instance.client);
-    _fetchProfile();
+    if (NetworkService.instance.isOnline && Supabase.instance.client.auth.currentUser != null) {
+      _fetchProfile();
+    }
   }
 
   @override
@@ -269,14 +274,51 @@ class _ProfilePageState extends State<ProfilePage> {
     }
   }
 
-  @override
-  Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator(color: Colors.green)),
-      );
-    }
+  Widget _buildOfflineProfileView(bool isOnline) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.cloud_off_rounded, size: 80, color: Colors.grey[400]),
+            const SizedBox(height: 20),
+            const Text(
+              "You're Offline",
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black87),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              "You can still record observations offline. Once you connect to the internet, you can sign in to sync your data.",
+              style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 32),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.green[700],
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              ),
+              onPressed: isOnline
+                  ? () {
+                      Navigator.of(context).pushReplacementNamed('/');
+                    }
+                  : null,
+              icon: const Icon(Icons.login),
+              label: Text(
+                isOnline ? "Sign In Now" : "Connect to Internet to Sign In",
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
+  Widget _buildOnlineProfileView() {
     final userName = _profile?['user_name'] ?? 'User';
     final email = _profile?['email'] ?? Supabase.instance.client.auth.currentUser?.email ?? 'N/A';
     final avatarUrl = _profile?['avatar_url'] as String?;
@@ -287,117 +329,171 @@ class _ProfilePageState extends State<ProfilePage> {
     final isGoogleUser = user?.appMetadata['provider'] == 'google' ||
         (user?.appMetadata['providers'] as List?)?.contains('google') == true;
 
-    return Scaffold(
-      backgroundColor: Colors.grey[50],
-      appBar: AppBar(
-        title: const Text(
-          'My Profile',
-          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
-        ),
-        backgroundColor: Colors.green[700],
-        elevation: 0,
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24.0),
-        child: Form(
-          key: _formKey,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Avatar edit section
-              Center(
-                child: Stack(
-                  children: [
-                    Container(
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.08),
-                            blurRadius: 12,
-                            offset: const Offset(0, 4),
-                          ),
-                        ],
-                      ),
-                      child: CircleAvatar(
-                        radius: 60,
-                        backgroundColor: Colors.green[50],
-                        backgroundImage: NetworkImage(displayAvatar),
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(24.0),
+      child: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Avatar edit section
+            Center(
+              child: Stack(
+                children: [
+                  Container(
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.08),
+                          blurRadius: 12,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: CircleAvatar(
+                      radius: 60,
+                      backgroundColor: Colors.green[50],
+                      backgroundImage: NetworkImage(displayAvatar),
+                    ),
+                  ),
+                  if (_isUploadingAvatar)
+                    Positioned.fill(
+                      child: Container(
+                        decoration: const BoxDecoration(
+                          color: Colors.black38,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Center(
+                          child: CircularProgressIndicator(color: Colors.white),
+                        ),
                       ),
                     ),
-                    if (_isUploadingAvatar)
-                      Positioned.fill(
+                  if (!isGoogleUser)
+                    Positioned(
+                      bottom: 0,
+                      right: 0,
+                      child: GestureDetector(
+                        onTap: _isUploadingAvatar ? null : _showImageSourceDialog,
                         child: Container(
-                          decoration: const BoxDecoration(
-                            color: Colors.black38,
+                          padding: const EdgeInsets.all(10.0),
+                          decoration: BoxDecoration(
+                            color: Colors.green[700],
                             shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
                           ),
-                          child: const Center(
-                            child: CircularProgressIndicator(color: Colors.white),
-                          ),
-                        ),
-                      ),
-                    if (!isGoogleUser)
-                      Positioned(
-                        bottom: 0,
-                        right: 0,
-                        child: GestureDetector(
-                          onTap: _isUploadingAvatar ? null : _showImageSourceDialog,
-                          child: Container(
-                            padding: const EdgeInsets.all(10.0),
-                            decoration: BoxDecoration(
-                              color: Colors.green[700],
-                              shape: BoxShape.circle,
-                              border: Border.all(color: Colors.white, width: 2),
-                            ),
-                            child: const Icon(
-                              Icons.camera_alt,
-                              color: Colors.white,
-                              size: 20,
-                            ),
+                          child: const Icon(
+                            Icons.camera_alt,
+                            color: Colors.white,
+                            size: 20,
                           ),
                         ),
                       ),
+                    ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16.0),
+            Center(
+              child: Text(
+                email,
+                style: TextStyle(color: Colors.grey[600], fontSize: 14),
+              ),
+            ),
+            if (isGoogleUser) ...[
+              const SizedBox(height: 20.0),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+                decoration: BoxDecoration(
+                  color: Colors.blue[50],
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.blue[100]!),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.info_outline, color: Colors.blue[800]),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'You are signed in with Google. Password and avatar updates are managed by Google.',
+                        style: TextStyle(
+                          color: Colors.blue[900],
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
-              const SizedBox(height: 16.0),
-              Center(
-                child: Text(
-                  email,
-                  style: TextStyle(color: Colors.grey[600], fontSize: 14),
-                ),
-              ),
-              if (isGoogleUser) ...[
-                const SizedBox(height: 20.0),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
-                  decoration: BoxDecoration(
-                    color: Colors.blue[50],
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.blue[100]!),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.info_outline, color: Colors.blue[800]),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(
-                          'You are signed in with Google. Password and avatar updates are managed by Google.',
-                          style: TextStyle(
-                            color: Colors.blue[900],
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500,
-                          ),
+            ],
+            const SizedBox(height: 32.0),
+
+            // Edit Username Card
+            Card(
+              color: Colors.white,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+              elevation: 2,
+              shadowColor: Colors.black.withValues(alpha: 0.04),
+              child: Padding(
+                padding: const EdgeInsets.all(20.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'PERSONAL INFORMATION',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.grey,
+                        letterSpacing: 1.1,
+                      ),
+                    ),
+                    const SizedBox(height: 16.0),
+                    TextFormField(
+                      controller: _usernameController,
+                      decoration: InputDecoration(
+                        labelText: 'Username',
+                        prefixIcon: const Icon(Icons.person_outline, color: Colors.green),
+                        filled: true,
+                        fillColor: Colors.grey[50],
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: Colors.grey[300]!),
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(height: 16.0),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: Colors.green[700],
+                          padding: const EdgeInsets.symmetric(vertical: 14),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        onPressed: _isSavingUsername ? null : _updateUsername,
+                        icon: _isSavingUsername
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
+                              )
+                            : const Icon(Icons.check_circle_outline),
+                        label: const Text(
+                          'Save Username',
+                          style: TextStyle(fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-              const SizedBox(height: 32.0),
+              ),
+            ),
+            const SizedBox(height: 20.0),
 
-              // Edit Username Card
+            if (!isGoogleUser) ...[
+              // Change Password Card
               Card(
                 color: Colors.white,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
@@ -409,7 +505,7 @@ class _ProfilePageState extends State<ProfilePage> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text(
-                        'PERSONAL INFORMATION',
+                        'SECURITY',
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.bold,
@@ -419,10 +515,40 @@ class _ProfilePageState extends State<ProfilePage> {
                       ),
                       const SizedBox(height: 16.0),
                       TextFormField(
-                        controller: _usernameController,
+                        controller: _passwordController,
+                        obscureText: _obscurePassword,
                         decoration: InputDecoration(
-                          labelText: 'Username',
-                          prefixIcon: const Icon(Icons.person_outline, color: Colors.green),
+                          labelText: 'New Password',
+                          prefixIcon: const Icon(Icons.lock_outline, color: Colors.green),
+                          suffixIcon: IconButton(
+                            icon: Icon(
+                              _obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                              color: Colors.grey,
+                            ),
+                            onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
+                          ),
+                          filled: true,
+                          fillColor: Colors.grey[50],
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: BorderSide(color: Colors.grey[300]!),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 16.0),
+                      TextFormField(
+                        controller: _confirmPasswordController,
+                        obscureText: _obscureConfirmPassword,
+                        decoration: InputDecoration(
+                          labelText: 'Confirm Password',
+                          prefixIcon: const Icon(Icons.lock_outline, color: Colors.green),
+                          suffixIcon: IconButton(
+                            icon: Icon(
+                              _obscureConfirmPassword ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                              color: Colors.grey,
+                            ),
+                            onPressed: () => setState(() => _obscureConfirmPassword = !_obscureConfirmPassword),
+                          ),
                           filled: true,
                           fillColor: Colors.grey[50],
                           border: OutlineInputBorder(
@@ -440,16 +566,16 @@ class _ProfilePageState extends State<ProfilePage> {
                             padding: const EdgeInsets.symmetric(vertical: 14),
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                           ),
-                          onPressed: _isSavingUsername ? null : _updateUsername,
-                          icon: _isSavingUsername
+                          onPressed: _isSavingPassword ? null : _updatePassword,
+                          icon: _isSavingPassword
                               ? const SizedBox(
                                   width: 18,
                                   height: 18,
                                   child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
                                 )
-                              : const Icon(Icons.check_circle_outline),
+                              : const Icon(Icons.lock_reset),
                           label: const Text(
-                            'Save Username',
+                            'Update Password',
                             style: TextStyle(fontWeight: FontWeight.bold),
                           ),
                         ),
@@ -458,174 +584,137 @@ class _ProfilePageState extends State<ProfilePage> {
                   ),
                 ),
               ),
-              const SizedBox(height: 20.0),
+              const SizedBox(height: 32.0),
+            ],
 
-              if (!isGoogleUser) ...[
-                // Change Password Card
-                Card(
-                  color: Colors.white,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                  elevation: 2,
-                  shadowColor: Colors.black.withValues(alpha: 0.04),
-                  child: Padding(
-                    padding: const EdgeInsets.all(20.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'SECURITY',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.grey,
-                            letterSpacing: 1.1,
-                          ),
-                        ),
-                        const SizedBox(height: 16.0),
-                        TextFormField(
-                          controller: _passwordController,
-                          obscureText: _obscurePassword,
-                          decoration: InputDecoration(
-                            labelText: 'New Password',
-                            prefixIcon: const Icon(Icons.lock_outline, color: Colors.green),
-                            suffixIcon: IconButton(
-                              icon: Icon(
-                                _obscurePassword ? Icons.visibility_outlined : Icons.visibility_off_outlined,
-                                color: Colors.grey,
-                              ),
-                              onPressed: () => setState(() => _obscurePassword = !_obscurePassword),
-                            ),
-                            filled: true,
-                            fillColor: Colors.grey[50],
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide(color: Colors.grey[300]!),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 16.0),
-                        TextFormField(
-                          controller: _confirmPasswordController,
-                          obscureText: _obscureConfirmPassword,
-                          decoration: InputDecoration(
-                            labelText: 'Confirm Password',
-                            prefixIcon: const Icon(Icons.lock_outline, color: Colors.green),
-                            suffixIcon: IconButton(
-                              icon: Icon(
-                                _obscureConfirmPassword ? Icons.visibility_outlined : Icons.visibility_off_outlined,
-                                color: Colors.grey,
-                              ),
-                              onPressed: () => setState(() => _obscureConfirmPassword = !_obscureConfirmPassword),
-                            ),
-                            filled: true,
-                            fillColor: Colors.grey[50],
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(12),
-                              borderSide: BorderSide(color: Colors.grey[300]!),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 16.0),
-                        SizedBox(
-                          width: double.infinity,
-                          child: FilledButton.icon(
-                            style: FilledButton.styleFrom(
-                              backgroundColor: Colors.green[700],
-                              padding: const EdgeInsets.symmetric(vertical: 14),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                            ),
-                            onPressed: _isSavingPassword ? null : _updatePassword,
-                            icon: _isSavingPassword
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                                  )
-                                : const Icon(Icons.lock_reset),
-                            label: const Text(
-                              'Update Password',
-                              style: TextStyle(fontWeight: FontWeight.bold),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 32.0),
-              ],
-
-              // Logout Button
-              OutlinedButton.icon(
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.red[700],
-                  side: BorderSide(color: Colors.red[200]!),
-                  padding: const EdgeInsets.symmetric(vertical: 16.0),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16.0),
-                  ),
-                ),
-                onPressed: _signOut,
-                icon: const Icon(Icons.logout),
-                label: const Text(
-                  'Sign Out',
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            // Logout Button
+            OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.red[700],
+                side: BorderSide(color: Colors.red[200]!),
+                padding: const EdgeInsets.symmetric(vertical: 16.0),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16.0),
                 ),
               ),
-              const SizedBox(height: 24.0),
-            ],
-          ),
-        ),
-      ),
-      bottomNavigationBar: Container(
-        decoration: BoxDecoration(
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.05),
-              blurRadius: 10,
-              offset: const Offset(0, -2),
+              onPressed: _signOut,
+              icon: const Icon(Icons.logout),
+              label: const Text(
+                'Sign Out',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
             ),
+            const SizedBox(height: 24.0),
           ],
         ),
-        child: BottomNavigationBar(
-          currentIndex: 2,
-          onTap: (index) {
-            if (index == 0) {
-              Navigator.of(context).pushReplacementNamed('/observations');
-            } else if (index == 1) {
-              Navigator.of(context).pushReplacementNamed('/map');
-            } else if (index == 2) {
-              // already on profile
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<bool>(
+      stream: NetworkService.instance.onConnectivityChanged,
+      initialData: NetworkService.instance.isOnline,
+      builder: (context, snapshot) {
+        final isOnline = snapshot.data ?? false;
+        final hasSession = Supabase.instance.client.auth.currentSession != null;
+        final showOffline = !hasSession || !isOnline;
+
+        // If online but we have no profile loaded yet, try fetching it
+        if (isOnline && hasSession && _profile == null && !_isLoading) {
+          WidgetsBinding.instance.addPostFrameCallback((_) => _fetchProfile());
+        }
+
+        return PopScope(
+          canPop: false,
+          onPopInvokedWithResult: (didPop, _) {
+            if (didPop) return;
+            final now = DateTime.now();
+            if (_lastBackPress != null && now.difference(_lastBackPress!) < const Duration(seconds: 2)) {
+              SystemNavigator.pop();
+            } else {
+              _lastBackPress = now;
+              ScaffoldMessenger.of(context).clearSnackBars();
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: const Text('Press back again to exit'),
+                  duration: const Duration(seconds: 2),
+                  backgroundColor: Colors.grey[800],
+                  behavior: SnackBarBehavior.floating,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              );
             }
           },
-          type: BottomNavigationBarType.fixed,
-          backgroundColor: Colors.white,
-          selectedItemColor: Colors.green[700],
-          unselectedItemColor: Colors.grey[500],
-          selectedFontSize: 12.0,
-          unselectedFontSize: 12.0,
-          selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold),
-          unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500),
-          elevation: 0,
-          items: const [
-            BottomNavigationBarItem(
-              icon: Icon(Icons.assignment_outlined),
-              activeIcon: Icon(Icons.assignment),
-              label: 'Observations',
+          child: Scaffold(
+            backgroundColor: Colors.grey[50],
+            appBar: AppBar(
+              automaticallyImplyLeading: false,
+              title: const Text(
+                'My Profile',
+                style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
+              ),
+              backgroundColor: Colors.green[700],
+              elevation: 0,
             ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.map_outlined),
-              activeIcon: Icon(Icons.map),
-              label: 'Map',
+          body: showOffline
+              ? _buildOfflineProfileView(isOnline)
+              : (_isLoading
+                  ? const Center(child: CircularProgressIndicator(color: Colors.green))
+                  : _buildOnlineProfileView()),
+          bottomNavigationBar: Container(
+            decoration: BoxDecoration(
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.05),
+                  blurRadius: 10,
+                  offset: const Offset(0, -2),
+                ),
+              ],
             ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.person_outline),
-              activeIcon: Icon(Icons.person),
-              label: 'Profile',
+            child: BottomNavigationBar(
+              currentIndex: 2,
+              onTap: (index) {
+                if (index == 0) {
+                  Navigator.of(context).pushReplacementNamed('/observations');
+                } else if (index == 1) {
+                  Navigator.of(context).pushReplacementNamed('/map');
+                } else if (index == 2) {
+                  // already on profile
+                }
+              },
+              type: BottomNavigationBarType.fixed,
+              backgroundColor: Colors.white,
+              selectedItemColor: Colors.green[700],
+              unselectedItemColor: Colors.grey[500],
+              selectedFontSize: 12.0,
+              unselectedFontSize: 12.0,
+              selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold),
+              unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500),
+              elevation: 0,
+              items: const [
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.assignment_outlined),
+                  activeIcon: Icon(Icons.assignment),
+                  label: 'Observations',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.map_outlined),
+                  activeIcon: Icon(Icons.map),
+                  label: 'Map',
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.person_outline),
+                  activeIcon: Icon(Icons.person),
+                  label: 'Profile',
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
+          ),
+          ),  // closes Scaffold
+        );  // closes PopScope
+      },
     );
   }
 }
