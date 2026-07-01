@@ -26,8 +26,8 @@ class _MapPageState extends State<MapPage> {
   // Customization state (fixed defaults)
   static const double _fillOpacity = 0.25;
   static const double _borderOpacity = 0.80;
-  static const double _borderWidth = 2.0;
-  static const Color _selectedColor = Colors.green;
+  static const double _borderWidth = 0.5;
+  static const Color _selectedColor = Colors.black;
 
   // Simulation layers state
   bool _showIDW = false;
@@ -68,7 +68,13 @@ class _MapPageState extends State<MapPage> {
                 points.add(LatLng(lat, lng));
               }
               if (points.isNotEmpty) {
-                polygons.add(Polygon(points: points, hitValue: feature['properties']));
+                polygons.add(Polygon(
+                  points: points,
+                  color: Colors.transparent,
+                  borderColor: _selectedColor.withValues(alpha: _borderOpacity),
+                  borderStrokeWidth: _borderWidth,
+                  hitValue: feature['properties'],
+                ));
               }
             }
           }
@@ -83,7 +89,13 @@ class _MapPageState extends State<MapPage> {
               points.add(LatLng(lat, lng));
             }
             if (points.isNotEmpty) {
-              polygons.add(Polygon(points: points, hitValue: feature['properties']));
+              polygons.add(Polygon(
+                points: points,
+                color: Colors.transparent,
+                borderColor: _selectedColor.withValues(alpha: _borderOpacity),
+                borderStrokeWidth: _borderWidth,
+                hitValue: feature['properties'],
+              ));
             }
           }
         }
@@ -294,12 +306,8 @@ class _MapPageState extends State<MapPage> {
               ),
               if (_countryPolygons.isNotEmpty)
                 PolygonLayer(
-                  polygons: _countryPolygons.map((poly) => Polygon(
-                    points: poly.points,
-                    color: Colors.transparent,
-                    borderColor: _selectedColor.withValues(alpha: _borderOpacity),
-                    borderStrokeWidth: _borderWidth,
-                  )).toList(),
+                  polygons: _countryPolygons,
+                  simplificationTolerance: 1.2,
                 ),
               
               // 2. Dynamic simulation contour layers

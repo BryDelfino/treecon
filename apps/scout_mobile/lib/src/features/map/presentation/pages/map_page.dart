@@ -26,8 +26,8 @@ class _MapPageState extends State<MapPage> {
   // Customization state (fixed defaults)
   static const double _fillOpacity = 0.25;
   static const double _borderOpacity = 0.80;
-  static const double _borderWidth = 2.0;
-  static const Color _selectedColor = Colors.green;
+  static const double _borderWidth = 0.5;
+  static const Color _selectedColor = Colors.black;
 
   // Simulation layers state
   bool _showIDW = false;
