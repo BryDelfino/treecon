@@ -1,6 +1,12 @@
+import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'dart:typed_data';
 import 'package:shared_services/shared_services.dart';
+import 'package:scout_mobile/src/core/services/network_service.dart';
+import '../../data/observation_local_db.dart';
+import 'add_observation_page.dart';
 
 class ObservationPage extends StatefulWidget {
   const ObservationPage({super.key});
@@ -13,34 +19,117 @@ class _ObservationPageState extends State<ObservationPage> {
   List<Map<String, dynamic>> _observations = [];
   bool _isLoading = true;
   String? _error;
+  bool _isSyncing = false;
+  late final StreamSubscription<bool> _networkSub;
+  DateTime? _lastBackPress;
 
   @override
   void initState() {
     super.initState();
     _fetchObservations();
+    
+    // Automatically trigger sync if online immediately on page load
+    if (NetworkService.instance.isOnline) {
+      _syncPendingObservations();
+    }
+
+    // Set up auto-sync listener when internet connection is restored
+    _networkSub = NetworkService.instance.onConnectivityChanged.listen((isOnline) {
+      if (!mounted) return;
+      if (isOnline) {
+        _syncPendingObservations();
+      } else {
+        _fetchObservations();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _networkSub.cancel();
+    super.dispose();
   }
 
   Future<void> _fetchObservations() async {
+    if (!mounted) return;
     setState(() {
       _isLoading = true;
       _error = null;
     });
 
-    try {
-      final user = Supabase.instance.client.auth.currentUser;
-      if (user == null) {
-        throw Exception('User not authenticated');
-      }
+    final isOnline = NetworkService.instance.isOnline;
+    final user = Supabase.instance.client.auth.currentUser;
 
+    if (!isOnline || user == null) {
+      // Offline mode: load from SQLite cache
+      try {
+        final cached = await ObservationLocalDb.instance.getAllLocal();
+        if (mounted) {
+          setState(() {
+            _observations = cached.map((e) {
+              return {
+                'observation_id': e.observationId,
+                'user_id': e.userId,
+                'coordinates': 'POINT(${e.longitude} ${e.latitude})',
+                'timestamp': e.observationTimestamp.toIso8601String(),
+                'sync_status': e.syncStatus,
+                'image_path': e.imagePath,
+                'final_severity': 'healthy', // Default placeholder severity when offline
+                'capture_method': e.source.toUpperCase(),
+                'evaluation_method': 'MANUAL',
+              };
+            }).toList();
+            _isLoading = false;
+          });
+        }
+      } catch (e) {
+        if (mounted) {
+          setState(() {
+            _error = 'Local DB Error: ${e.toString()}';
+            _isLoading = false;
+          });
+        }
+      }
+      return;
+    }
+
+    // Online mode: load from Supabase remote database
+    try {
       final data = await Supabase.instance.client
           .from('observations')
           .select()
           .eq('user_id', user.id)
-          .order('timestamp', ascending: false);
+          .order('observation_timestamp', ascending: false);
+
+      final List<Map<String, dynamic>> remoteList = (data as List<dynamic>).map((e) {
+        final map = e as Map<String, dynamic>;
+        return {
+          ...map,
+          'timestamp': map['observation_timestamp'] ?? map['upload_timestamp'] ?? DateTime.now().toIso8601String(),
+          'final_severity': map['confidence_score'] != null ? 'high' : 'unknown',
+        };
+      }).toList();
+
+      // Retrieve local unsynced observations to overlay them in the list representation
+      final localCached = await ObservationLocalDb.instance.getPending();
+      final List<Map<String, dynamic>> pendingList = localCached.map((e) {
+        return {
+          'observation_id': e.observationId,
+          'user_id': e.userId ?? user.id,
+          'coordinates': 'POINT(${e.longitude} ${e.latitude})',
+          'timestamp': e.observationTimestamp.toIso8601String(),
+          'sync_status': e.syncStatus,
+          'image_path': e.imagePath,
+          'final_severity': 'healthy',
+          'capture_method': e.source.toUpperCase(),
+          'evaluation_method': 'MANUAL',
+        };
+      }).toList();
 
       if (mounted) {
         setState(() {
-          _observations = (data as List<dynamic>).map((e) => e as Map<String, dynamic>).toList();
+          // Combine pending local and remote observations (local first so they appear at the top)
+          _observations = [...pendingList, ...remoteList];
           _isLoading = false;
         });
       }
@@ -49,6 +138,106 @@ class _ObservationPageState extends State<ObservationPage> {
         setState(() {
           _error = e.toString();
           _isLoading = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _syncPendingObservations() async {
+    if (_isSyncing) return;
+    final isOnline = NetworkService.instance.isOnline;
+    final user = Supabase.instance.client.auth.currentUser;
+    if (!isOnline || user == null) return;
+
+    if (!mounted) return;
+    setState(() {
+      _isSyncing = true;
+    });
+
+    try {
+      final pending = await ObservationLocalDb.instance.getPending();
+      if (pending.isEmpty) {
+        if (mounted) {
+          setState(() {
+            _isSyncing = false;
+          });
+        }
+        return;
+      }
+
+      _showToast('Syncing ${pending.length} pending observation(s)...', isError: false);
+
+      for (var obs in pending) {
+        try {
+          String? remoteImageUrl;
+          
+          // 1. Upload local photo to storage bucket if it exists
+          if (obs.imagePath != null && obs.imagePath!.isNotEmpty) {
+            final file = File(obs.imagePath!);
+            if (await file.exists()) {
+              final fileName = '${user.id}/${obs.observationId}.jpg';
+              // Upload to Supabase 'observations' storage bucket using standard file upload
+              try {
+                await Supabase.instance.client.storage
+                    .from('observations')
+                    .upload(
+                      fileName, 
+                      file, 
+                      fileOptions: const FileOptions(cacheControl: '3600')
+                    );
+              } on StorageException catch (se) {
+                // Supabase storage client has a known bug throwing 'API error' with 200 OK on success
+                // Also ignore 400/409 'The resource already exists' in case this is a retry and the image is already there.
+                final isDuplicate = (se.statusCode == 400 || se.statusCode == 409) && se.message.toLowerCase().contains('exists');
+                if (!isDuplicate && se.statusCode != 200 && se.message != 'API error') {
+                  throw Exception('Storage Upload Failed: ${se.message} (${se.statusCode})');
+                }
+              }
+
+              // Obtain public URL
+              remoteImageUrl = Supabase.instance.client.storage
+                  .from('observations')
+                  .getPublicUrl(fileName);
+            }
+          }
+
+          // 2. Insert to Postgres db (Idempotency: Catch 23505 duplicate code or overwrite)
+          try {
+            await Supabase.instance.client.from('observations').insert({
+              'observation_id': obs.observationId,
+              'user_id': user.id,
+              'coordinates': 'POINT(${obs.longitude} ${obs.latitude})',
+              'image_url': remoteImageUrl,
+              'observation_timestamp': obs.observationTimestamp.toUtc().toIso8601String(),
+              'upload_timestamp': DateTime.now().toUtc().toIso8601String(),
+              'source': obs.source.toUpperCase(),
+              'sync_status': 'UPLOADED',
+            }).select();
+          } on PostgrestException catch (pe) {
+            // Unique violation (409 / 23505 conflict) means already uploaded
+            if (pe.code == '23505') {
+              // Ignore duplicate
+            } else {
+              throw Exception('Database Insert Failed: ${pe.message} (Code: ${pe.code})');
+            }
+          }
+
+          await ObservationLocalDb.instance.markUploaded(obs.observationId);
+        } catch (e) {
+          debugPrint('Sync failed for ${obs.observationId}: $e');
+          await ObservationLocalDb.instance.markFailed(obs.observationId);
+          throw Exception('Item ${obs.observationId} failed: $e');
+        }
+      }
+
+      _showToast('Observations synchronized successfully!', isError: false);
+      _fetchObservations();
+    } catch (e) {
+      _showToast('Synchronization error: $e');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isSyncing = false;
         });
       }
     }
@@ -136,89 +325,159 @@ class _ObservationPageState extends State<ObservationPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.grey[50],
-      appBar: AppBar(
-        title: const Text(
-          'My Observations',
-          style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
-        ),
-        backgroundColor: Colors.green[700],
-        elevation: 0,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh, color: Colors.white),
-            onPressed: _fetchObservations,
-          ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          RefreshIndicator(
-            onRefresh: _fetchObservations,
-            color: Colors.green[700],
-            child: _buildBody(),
-          ),
-          Positioned(
-            bottom: 16,
-            right: 16,
-            child: FloatingActionButton(
-              backgroundColor: Colors.green[700],
-              onPressed: () {
-                _showToast('Add Observation - placeholder functionality!', isError: false);
-              },
-              child: const Icon(Icons.add, color: Colors.white),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        final now = DateTime.now();
+        if (_lastBackPress != null && now.difference(_lastBackPress!) < const Duration(seconds: 2)) {
+          SystemNavigator.pop();
+        } else {
+          _lastBackPress = now;
+          ScaffoldMessenger.of(context).clearSnackBars();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('Press back again to exit'),
+              duration: const Duration(seconds: 2),
+              backgroundColor: Colors.grey[800],
+              behavior: SnackBarBehavior.floating,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
             ),
+          );
+        }
+      },
+      child: Scaffold(
+        backgroundColor: Colors.grey[50],
+        appBar: AppBar(
+          automaticallyImplyLeading: false,
+          title: const Text(
+            'My Observations',
+            style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
           ),
-        ],
-      ),
-      bottomNavigationBar: Container(
-        decoration: BoxDecoration(
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.05),
-              blurRadius: 10,
-              offset: const Offset(0, -2),
-            ),
-          ],
-        ),
-        child: BottomNavigationBar(
-          currentIndex: 0,
-          onTap: (index) {
-            if (index == 0) {
-              // already on observations
-            } else if (index == 1) {
-              Navigator.of(context).pushReplacementNamed('/map');
-            } else if (index == 2) {
-              Navigator.of(context).pushReplacementNamed('/profile');
-            }
-          },
-          type: BottomNavigationBarType.fixed,
-          backgroundColor: Colors.white,
-          selectedItemColor: Colors.green[700],
-          unselectedItemColor: Colors.grey[500],
-          selectedFontSize: 12.0,
-          unselectedFontSize: 12.0,
-          selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold),
-          unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500),
+          backgroundColor: Colors.green[700],
           elevation: 0,
-          items: const [
-            BottomNavigationBarItem(
-              icon: Icon(Icons.assignment_outlined),
-              activeIcon: Icon(Icons.assignment),
-              label: 'Observations',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.map_outlined),
-              activeIcon: Icon(Icons.map),
-              label: 'Map',
-            ),
-            BottomNavigationBarItem(
-              icon: Icon(Icons.person_outline),
-              activeIcon: Icon(Icons.person),
-              label: 'Profile',
+          actions: [
+            // StreamBuilder for real-time unsynced observations count
+            StreamBuilder<int>(
+              stream: ObservationLocalDb.instance.pendingCountStream,
+              initialData: 0,
+              builder: (context, snapshot) {
+                final pendingCount = snapshot.data ?? 0;
+                return Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    IconButton(
+                      icon: Icon(
+                        pendingCount > 0 ? Icons.cloud_upload_rounded : Icons.refresh,
+                        color: Colors.white,
+                      ),
+                      onPressed: pendingCount > 0 ? _syncPendingObservations : _fetchObservations,
+                    ),
+                    if (pendingCount > 0)
+                      Positioned(
+                        right: 4,
+                        top: 4,
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: const BoxDecoration(
+                            color: Colors.red,
+                            shape: BoxShape.circle,
+                          ),
+                          constraints: const BoxConstraints(
+                            minWidth: 16,
+                            minHeight: 16,
+                          ),
+                          child: Text(
+                            '$pendingCount',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                  ],
+                );
+              },
             ),
           ],
+        ),
+        body: Stack(
+          children: [
+            RefreshIndicator(
+              onRefresh: _fetchObservations,
+              color: Colors.green[700],
+              child: _buildBody(),
+            ),
+            Positioned(
+              bottom: 16,
+              right: 16,
+              child: FloatingActionButton(
+                backgroundColor: Colors.green[700],
+                onPressed: () async {
+                  final success = await Navigator.push<bool>(
+                    context,
+                    MaterialPageRoute(builder: (context) => const AddObservationPage()),
+                  );
+                  if (success == true) {
+                    _fetchObservations();
+                  }
+                },
+                child: const Icon(Icons.add, color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+        bottomNavigationBar: Container(
+          decoration: BoxDecoration(
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.05),
+                blurRadius: 10,
+                offset: const Offset(0, -2),
+              ),
+            ],
+          ),
+          child: BottomNavigationBar(
+            currentIndex: 0,
+            onTap: (index) {
+              if (index == 0) {
+                // already on observations
+              } else if (index == 1) {
+                Navigator.of(context).pushReplacementNamed('/map');
+              } else if (index == 2) {
+                Navigator.of(context).pushReplacementNamed('/profile');
+              }
+            },
+            type: BottomNavigationBarType.fixed,
+            backgroundColor: Colors.white,
+            selectedItemColor: Colors.green[700],
+            unselectedItemColor: Colors.grey[500],
+            selectedFontSize: 12.0,
+            unselectedFontSize: 12.0,
+            selectedLabelStyle: const TextStyle(fontWeight: FontWeight.bold),
+            unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w500),
+            elevation: 0,
+            items: const [
+              BottomNavigationBarItem(
+                icon: Icon(Icons.assignment_outlined),
+                activeIcon: Icon(Icons.assignment),
+                label: 'Observations',
+              ),
+              BottomNavigationBarItem(
+                icon: Icon(Icons.map_outlined),
+                activeIcon: Icon(Icons.map),
+                label: 'Map',
+              ),
+              BottomNavigationBarItem(
+                icon: Icon(Icons.person_outline),
+                activeIcon: Icon(Icons.person),
+                label: 'Profile',
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -283,7 +542,7 @@ class _ObservationPageState extends State<ObservationPage> {
                 const SizedBox(height: 8),
                 Text(
                   'Your collected gall rust observations will appear here.',
-                  style: TextStyle(color: Colors.grey[500]),
+                  style: TextStyle(color: Colors.grey[50]),
                 ),
               ],
             ),
@@ -326,7 +585,9 @@ class _ObservationPageState extends State<ObservationPage> {
               final lngStr = coords != null ? coords['lng']!.toStringAsFixed(6) : 'N/A';
               final captureMethod = obs['capture_method']?.toString() ?? 'UPLOAD';
               final evaluationMethod = obs['evaluation_method']?.toString() ?? 'CNN';
+              
               final imageUrl = obs['image_url']?.toString();
+              final localImagePath = obs['image_path']?.toString();
 
               return Card(
                 elevation: 2.0,
@@ -344,111 +605,130 @@ class _ObservationPageState extends State<ObservationPage> {
                   child: IntrinsicHeight(
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      // Image Thumbnail / Placeholder
-                      ClipRRect(
-                        borderRadius: const BorderRadius.only(
-                          topLeft: Radius.circular(16.0),
-                          bottomLeft: Radius.circular(16.0),
+                      children: [
+                        // Image Thumbnail / Placeholder (supports offline files & online urls)
+                        ClipRRect(
+                          borderRadius: const BorderRadius.only(
+                            topLeft: Radius.circular(16.0),
+                            bottomLeft: Radius.circular(16.0),
+                          ),
+                          child: SizedBox(
+                            width: 100,
+                            child: localImagePath != null && localImagePath.isNotEmpty
+                                ? Image.file(
+                                    File(localImagePath),
+                                    fit: BoxFit.cover,
+                                    errorBuilder: (context, error, stackTrace) => Container(
+                                      color: Colors.green[50],
+                                      child: Icon(Icons.image_not_supported_outlined, color: Colors.green[200]),
+                                    ),
+                                  )
+                                : (imageUrl != null && imageUrl.isNotEmpty
+                                    ? Image.network(
+                                        imageUrl,
+                                        fit: BoxFit.cover,
+                                        errorBuilder: (context, error, stackTrace) => Container(
+                                          color: Colors.green[50],
+                                          child: Icon(Icons.image_not_supported_outlined, color: Colors.green[200]),
+                                        ),
+                                      )
+                                    : Container(
+                                        color: Colors.green[50],
+                                        child: Icon(Icons.park_outlined, color: Colors.green[200], size: 36),
+                                      )),
+                          ),
                         ),
-                        child: SizedBox(
-                          width: 100,
-                          child: imageUrl != null && imageUrl.isNotEmpty
-                              ? Image.network(
-                                  imageUrl,
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (context, error, stackTrace) => Container(
-                                    color: Colors.green[50],
-                                    child: Icon(Icons.image_not_supported_outlined, color: Colors.green[200]),
-                                  ),
-                                )
-                              : Container(
-                                  color: Colors.green[50],
-                                  child: Icon(Icons.park_outlined, color: Colors.green[200], size: 36),
-                                ),
-                        ),
-                      ),
-                      // Details
-                      Expanded(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16.0),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 4.0),
-                                    decoration: BoxDecoration(
-                                      color: severityColor.withValues(alpha: 0.1),
-                                      borderRadius: BorderRadius.circular(100.0),
-                                    ),
-                                    child: Text(
-                                      severity.toUpperCase(),
-                                      style: TextStyle(
-                                        fontSize: 11,
-                                        fontWeight: FontWeight.bold,
-                                        color: severityColor,
-                                      ),
-                                    ),
-                                  ),
-                                  Text(
-                                    dateStr,
-                                    style: TextStyle(fontSize: 12, color: Colors.grey[500]),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 8.0),
-                              Row(
-                                children: [
-                                  Icon(Icons.location_on_outlined, size: 14, color: Colors.green[700]),
-                                  const SizedBox(width: 4.0),
-                                  Expanded(
-                                    child: Text(
-                                      'Lat: $latStr, Lng: $lngStr',
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w500,
-                                        color: Colors.black87,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 6.0),
-                              Row(
-                                children: [
-                                  Icon(Icons.camera_alt_outlined, size: 14, color: Colors.grey[600]),
-                                  const SizedBox(width: 4.0),
-                                  Text(
-                                    'Method: $captureMethod ($evaluationMethod)',
-                                    style: TextStyle(fontSize: 11, color: Colors.grey[600]),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 6.0),
-                              if (obs['sync_status'] != null)
+                        // Details
+                        Expanded(
+                          child: Padding(
+                            padding: const EdgeInsets.all(16.0),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
                                 Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                   children: [
-                                    Icon(Icons.cloud_done_outlined, size: 14, color: Colors.blue[600]),
-                                    const SizedBox(width: 4.0),
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 4.0),
+                                      decoration: BoxDecoration(
+                                        color: severityColor.withValues(alpha: 0.1),
+                                        borderRadius: BorderRadius.circular(100.0),
+                                      ),
+                                      child: Text(
+                                        severity.toUpperCase(),
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.bold,
+                                          color: severityColor,
+                                        ),
+                                      ),
+                                    ),
                                     Text(
-                                      'Sync: ${obs['sync_status']}',
-                                      style: TextStyle(fontSize: 11, color: Colors.blue[600]),
+                                      dateStr,
+                                      style: TextStyle(fontSize: 12, color: Colors.grey[500]),
                                     ),
                                   ],
                                 ),
-                            ],
+                                const SizedBox(height: 8.0),
+                                Row(
+                                  children: [
+                                    Icon(Icons.location_on_outlined, size: 14, color: Colors.green[700]),
+                                    const SizedBox(width: 4.0),
+                                    Expanded(
+                                      child: Text(
+                                        'Lat: $latStr, Lng: $lngStr',
+                                        style: const TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w500,
+                                          color: Colors.black87,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6.0),
+                                Row(
+                                  children: [
+                                    Icon(Icons.camera_alt_outlined, size: 14, color: Colors.grey[600]),
+                                    const SizedBox(width: 4.0),
+                                    Text(
+                                      'Method: $captureMethod ($evaluationMethod)',
+                                      style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 6.0),
+                                if (obs['sync_status'] != null)
+                                  Row(
+                                    children: [
+                                      Icon(
+                                        obs['sync_status'] == 'UPLOADED'
+                                            ? Icons.cloud_done_outlined
+                                            : Icons.cloud_upload_outlined,
+                                        size: 14,
+                                        color: obs['sync_status'] == 'UPLOADED' ? Colors.blue[600] : Colors.amber[800],
+                                      ),
+                                      const SizedBox(width: 4.0),
+                                      Text(
+                                        'Sync: ${obs['sync_status']}',
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          color: obs['sync_status'] == 'UPLOADED' ? Colors.blue[600] : Colors.amber[800],
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                              ],
+                            ),
                           ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            );
-          },
+              );
+            },
           ),
         ),
       ],
