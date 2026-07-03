@@ -2,6 +2,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:mime/mime.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_services/shared_services.dart';
@@ -86,6 +87,12 @@ class _AddObservationPageState extends State<AddObservationPage> {
       );
 
       if (pickedFile != null && mounted) {
+        final mimeType = lookupMimeType(pickedFile.path);
+        if (mimeType != 'image/jpeg' && mimeType != 'image/jpg') {
+          _showSnackBar('Only JPG/JPEG files are allowed.', isError: true);
+          return;
+        }
+
         setState(() {
           _imageFile = File(pickedFile.path);
         });
