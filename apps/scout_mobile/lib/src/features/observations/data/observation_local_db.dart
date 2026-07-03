@@ -79,11 +79,10 @@ class ObservationLocalDb {
     return List.generate(maps.length, (i) => CachedObservation.fromMap(maps[i]));
   }
 
-  Future<void> markUploaded(String observationId) async {
+  Future<void> deleteObservation(String observationId) async {
     final db = await database;
-    await db.update(
+    await db.delete(
       'cached_observations',
-      {'sync_status': 'UPLOADED'},
       where: 'observation_id = ?',
       whereArgs: [observationId],
     );
