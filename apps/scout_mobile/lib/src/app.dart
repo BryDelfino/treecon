@@ -9,7 +9,8 @@ import 'package:scout_mobile/src/features/map/presentation/pages/map_page.dart';
 import 'core/services/network_service.dart';
 
 class MyApp extends StatefulWidget {
-  const MyApp({super.key});
+  final bool hasPending;
+  const MyApp({super.key, this.hasPending = false});
 
   @override
   State<MyApp> createState() => _MyAppState();
@@ -45,7 +46,7 @@ class _MyAppState extends State<MyApp> {
     // If online, we check for a valid Supabase session
     final isOnline = NetworkService.instance.isOnline;
     final hasSession = Supabase.instance.client.auth.currentSession != null;
-    final String initialRoute = (!isOnline || hasSession) ? '/observations' : '/';
+    final String initialRoute = (!isOnline || hasSession || widget.hasPending) ? '/observations' : '/';
 
     return MaterialApp(
       title: 'Treecon Scout',
