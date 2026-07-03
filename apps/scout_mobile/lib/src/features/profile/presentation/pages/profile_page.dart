@@ -1,9 +1,12 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:mime/mime.dart';
 import 'package:core/core.dart';
 import 'package:shared_services/shared_services.dart';
 import 'package:scout_mobile/src/core/services/network_service.dart';
+import '../../../observations/data/observation_local_db.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -26,15 +29,24 @@ class _ProfilePageState extends State<ProfilePage> {
   bool _obscureConfirmPassword = true;
 
   Map<String, dynamic>? _profile;
-  late final UserService _userService;
   DateTime? _lastBackPress;
+  int _pendingCount = 0;
 
   @override
   void initState() {
     super.initState();
-    _userService = UserService(Supabase.instance.client);
+    _checkPending();
     if (NetworkService.instance.isOnline && Supabase.instance.client.auth.currentUser != null) {
       _fetchProfile();
+    }
+  }
+
+  Future<void> _checkPending() async {
+    final pending = await ObservationLocalDb.instance.getPending();
+    if (mounted) {
+      setState(() {
+        _pendingCount = pending.length;
+      });
     }
   }
 
@@ -171,32 +183,43 @@ class _ProfilePageState extends State<ProfilePage> {
 
       if (image == null) return;
 
+      final mimeType = lookupMimeType(image.path);
+      if (mimeType != 'image/jpeg' && mimeType != 'image/jpg') {
+        _showToast('Only JPG/JPEG files are allowed.', isError: true);
+        return;
+      }
+
       setState(() {
         _isUploadingAvatar = true;
       });
 
-      final bytes = await image.readAsBytes();
+      final file = File(image.path);
+      final bytes = await file.readAsBytes();
       final user = Supabase.instance.client.auth.currentUser;
       if (user == null) throw Exception('User not logged in');
 
-      String fileExtension = image.path.split('.').last.toLowerCase();
-      if (fileExtension == 'jpeg' ||
-          fileExtension == 'jpg' ||
-          fileExtension.contains('jpg') ||
-          fileExtension.contains('jpeg') ||
-          fileExtension == 'heic' ||
-          fileExtension == 'heif') {
-        fileExtension = 'jpg';
-      }
-      final publicUrl = await _userService.uploadAvatar(
-        userId: user.id,
-        bytes: bytes,
-        fileExtension: fileExtension,
-      );
+      String fileExtension = 'jpg';
 
-      // Update profile in users table
+      final fileName = '${user.id}_avatar.$fileExtension';
+
+      // Ensure 'avatars' bucket exists in your Supabase project
+      await Supabase.instance.client.storage.from('avatars').uploadBinary(
+            fileName,
+            bytes,
+            fileOptions: FileOptions(
+              cacheControl: '3600',
+              upsert: true,
+              contentType: mimeType ?? 'image/jpeg',
+            ),
+          );
+
+      final publicUrl = Supabase.instance.client.storage.from('avatars').getPublicUrl(fileName);
+
+      // Add timestamp to force image refresh in UI
+      final timestampUrl = '$publicUrl?t=${DateTime.now().millisecondsSinceEpoch}';
+
       final updatedData = await Supabase.instance.client.from('users').update({
-        'avatar_url': publicUrl,
+        'avatar_url': timestampUrl,
       }).eq('user_id', user.id).select();
 
       if (updatedData.isEmpty) {
@@ -204,7 +227,7 @@ class _ProfilePageState extends State<ProfilePage> {
       }
 
       setState(() {
-        _profile?['avatar_url'] = publicUrl;
+        _profile?['avatar_url'] = timestampUrl;
       });
 
       _showToast('Avatar updated successfully', isError: false);
@@ -270,7 +293,11 @@ class _ProfilePageState extends State<ProfilePage> {
       await Supabase.instance.client.auth.signOut();
     } catch (_) {}
     if (mounted) {
-      Navigator.of(context).pushReplacementNamed('/');
+      if (Supabase.instance.client.auth.currentUser != null) {
+        _showToast('Failed to sign out. Please try again.');
+        return;
+      }
+      Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
     }
   }
 
@@ -302,8 +329,50 @@ class _ProfilePageState extends State<ProfilePage> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               ),
               onPressed: isOnline
-                  ? () {
-                      Navigator.of(context).pushReplacementNamed('/');
+                  ? () async {
+                      final pendingCount = (await ObservationLocalDb.instance.getPending()).length;
+                      if (!mounted) return;
+                      
+                      if (pendingCount > 0) {
+                        final shouldSync = await showDialog<bool>(
+                          context: context,
+                          builder: (context) => AlertDialog(
+                            title: const Text('Sync Offline Observations'),
+                            content: Text(
+                              'You have $pendingCount offline observations waiting to sync. For security purposes, to ensure these observations are attributed to the correct account, your sign in credentials will be asked to verify your credentials. Do you wish to proceed?'
+                            ),
+                            actions: [
+                              TextButton(
+                                onPressed: () => Navigator.of(context).pop(false),
+                                child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+                              ),
+                              ElevatedButton(
+                                onPressed: () => Navigator.of(context).pop(true),
+                                style: ElevatedButton.styleFrom(backgroundColor: Colors.green[700], foregroundColor: Colors.white),
+                                child: const Text('Proceed'),
+                              ),
+                            ],
+                          ),
+                        );
+                        if (shouldSync != true) return;
+                        
+                        try {
+                          await Supabase.instance.client.auth.signOut();
+                        } catch (e) {
+                          debugPrint('Sign out error: $e');
+                        }
+                        
+                        if (!mounted) return;
+                        
+                        if (Supabase.instance.client.auth.currentUser != null) {
+                          _showToast('Failed to securely sign out. Please check your connection and try again.');
+                          return;
+                        }
+                        
+                        Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false, arguments: {'autoSync': true});
+                      } else {
+                        Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
+                      }
                     }
                   : null,
               icon: const Icon(Icons.login),
@@ -619,7 +688,7 @@ class _ProfilePageState extends State<ProfilePage> {
       builder: (context, snapshot) {
         final isOnline = snapshot.data ?? false;
         final hasSession = Supabase.instance.client.auth.currentSession != null;
-        final showOffline = !hasSession || !isOnline;
+        final showOffline = !hasSession || !isOnline || _pendingCount > 0;
 
         // If online but we have no profile loaded yet, try fetching it
         if (isOnline && hasSession && _profile == null && !_isLoading) {
