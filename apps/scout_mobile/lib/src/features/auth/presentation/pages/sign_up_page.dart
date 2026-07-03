@@ -121,7 +121,7 @@ class _SignUpPageState extends State<SignUpPage> {
         _showToast('Registration successful! Welcome, $username.', isError: false);
         
         if (mounted) {
-          Navigator.of(context).pushReplacementNamed('/observations');
+          Navigator.of(context).pushNamedAndRemoveUntil('/observations', (route) => false);
         }
       }
     } on AuthException catch (e) {
