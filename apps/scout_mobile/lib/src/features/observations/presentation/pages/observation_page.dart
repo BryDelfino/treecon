@@ -28,19 +28,22 @@ class _ObservationPageState extends State<ObservationPage> {
     super.initState();
     _fetchObservations();
     
-    // Automatically trigger sync if online immediately on page load
-    if (NetworkService.instance.isOnline) {
-      _syncPendingObservations();
-    }
+    ObservationLocalDb.instance.updatePendingCount();
 
-    // Set up auto-sync listener when internet connection is restored
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final args = ModalRoute.of(context)?.settings.arguments;
+      if (args is Map && args['autoSync'] == true) {
+        if (NetworkService.instance.isOnline && Supabase.instance.client.auth.currentUser != null) {
+          _syncPendingObservations();
+        }
+      }
+    });
+
+    // Fetch observations when internet connection is restored
     _networkSub = NetworkService.instance.onConnectivityChanged.listen((isOnline) {
       if (!mounted) return;
-      if (isOnline) {
-        _syncPendingObservations();
-      } else {
-        _fetchObservations();
-      }
+      _fetchObservations();
     });
   }
 
@@ -59,8 +62,9 @@ class _ObservationPageState extends State<ObservationPage> {
 
     final isOnline = NetworkService.instance.isOnline;
     final user = Supabase.instance.client.auth.currentUser;
+    final pendingCount = (await ObservationLocalDb.instance.getPending()).length;
 
-    if (!isOnline || user == null) {
+    if (!isOnline || user == null || pendingCount > 0) {
       // Offline mode: load from SQLite cache
       try {
         final cached = await ObservationLocalDb.instance.getAllLocal();
@@ -143,6 +147,49 @@ class _ObservationPageState extends State<ObservationPage> {
     }
   }
 
+  Future<void> _promptSecureSync(int pendingCount) async {
+    final shouldSync = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Sync Offline Observations'),
+        content: Text(
+          'You have $pendingCount offline observations waiting to sync. For security purposes, to ensure these observations are attributed to the correct account, your sign in credentials will be asked to verify your credentials. Do you wish to proceed?'
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.green[700], foregroundColor: Colors.white),
+            child: const Text('Proceed'),
+          ),
+        ],
+      ),
+    );
+
+    if (shouldSync == true) {
+      if (!mounted) return;
+      setState(() => _isSyncing = true);
+      try {
+        await Supabase.instance.client.auth.signOut();
+      } catch (e) {
+        debugPrint('Sign out error: $e');
+      }
+      if (!mounted) return;
+      
+      if (Supabase.instance.client.auth.currentUser != null) {
+        setState(() => _isSyncing = false);
+        _showToast('Failed to securely sign out. Please check your connection and try again.');
+        return;
+      }
+
+      // Navigate to SignInPage and pass autoSync argument
+      Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false, arguments: {'autoSync': true});
+    }
+  }
+
   Future<void> _syncPendingObservations() async {
     if (_isSyncing) return;
     final isOnline = NetworkService.instance.isOnline;
@@ -188,8 +235,8 @@ class _ObservationPageState extends State<ObservationPage> {
               } on StorageException catch (se) {
                 // Supabase storage client has a known bug throwing 'API error' with 200 OK on success
                 // Also ignore 400/409 'The resource already exists' in case this is a retry and the image is already there.
-                final isDuplicate = (se.statusCode == 400 || se.statusCode == 409) && se.message.toLowerCase().contains('exists');
-                if (!isDuplicate && se.statusCode != 200 && se.message != 'API error') {
+                final isDuplicate = (se.statusCode == '400' || se.statusCode == '409') && se.message.toLowerCase().contains('exists');
+                if (!isDuplicate && se.statusCode != '200' && se.message != 'API error') {
                   throw Exception('Storage Upload Failed: ${se.message} (${se.statusCode})');
                 }
               }
@@ -222,7 +269,7 @@ class _ObservationPageState extends State<ObservationPage> {
             }
           }
 
-          await ObservationLocalDb.instance.markUploaded(obs.observationId);
+          await ObservationLocalDb.instance.deleteObservation(obs.observationId);
         } catch (e) {
           debugPrint('Sync failed for ${obs.observationId}: $e');
           await ObservationLocalDb.instance.markFailed(obs.observationId);
@@ -369,9 +416,13 @@ class _ObservationPageState extends State<ObservationPage> {
                     IconButton(
                       icon: Icon(
                         pendingCount > 0 ? Icons.cloud_upload_rounded : Icons.refresh,
-                        color: Colors.white,
+                        color: NetworkService.instance.isOnline ? Colors.white : Colors.white54,
                       ),
-                      onPressed: pendingCount > 0 ? _syncPendingObservations : _fetchObservations,
+                      onPressed: NetworkService.instance.isOnline
+                          ? (pendingCount > 0 
+                              ? () => _promptSecureSync(pendingCount) 
+                              : _fetchObservations)
+                          : null,
                     ),
                     if (pendingCount > 0)
                       Positioned(
@@ -422,7 +473,11 @@ class _ObservationPageState extends State<ObservationPage> {
                     MaterialPageRoute(builder: (context) => const AddObservationPage()),
                   );
                   if (success == true) {
-                    _fetchObservations();
+                    if (NetworkService.instance.isOnline && Supabase.instance.client.auth.currentUser != null) {
+                      _syncPendingObservations();
+                    } else {
+                      _fetchObservations();
+                    }
                   }
                 },
                 child: const Icon(Icons.add, color: Colors.white),
