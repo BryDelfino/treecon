@@ -23,6 +23,16 @@ class _SignInPageState extends State<SignInPage> {
   
   late final StreamSubscription<AuthState> _authSubscription;
   String? _username;
+  bool _shouldAutoSync = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final args = ModalRoute.of(context)?.settings.arguments;
+    if (args is Map && args['autoSync'] == true) {
+      _shouldAutoSync = true;
+    }
+  }
 
   @override
   void initState() {
@@ -68,28 +78,26 @@ class _SignInPageState extends State<SignInPage> {
         final hasAccess = await _validateUserRole(user);
         
         if (hasAccess && mounted) {
-          _showToast('Welcome, ${_username ?? "User"}', isError: false);
-          // Navigate to the main screen
-          Navigator.of(context).pushReplacementNamed('/observations');
-          
-          // Trigger automatic background sync of any locally stored observations
-          // since the user is now authenticated and connected.
+          if (data.event == AuthChangeEvent.signedIn) {
+            _showToast('Welcome, ${_username ?? "User"}', isError: false);
+          }
           try {
-            // Import local DB and trigger sync
-            unawaited(ObservationLocalDb.instance.getPending().then((pending) async {
-              if (pending.isNotEmpty) {
-                // Trigger background database sync: we can just call markUploaded on success.
-                // Or let the system run the syncing directly here or when ObservationPage launches.
-                // To keep database operations encapsulated, we'll let the user's redirection to ObservationPage trigger it
-                // since ObservationPage registers an onConnectivityChanged/initial state sync.
-                // However, since they just signed in, let's explicitly update user_id on cached observations
-                // so they get associated with the newly authenticated user.
-                final db = await ObservationLocalDb.instance.database;
-                await db.update('cached_observations', {'user_id': user.id});
-              }
-            }));
+            final pending = await ObservationLocalDb.instance.getPending();
+            if (pending.isNotEmpty) {
+              final db = await ObservationLocalDb.instance.database;
+              await db.update('cached_observations', {'user_id': user.id});
+            }
           } catch (syncError) {
-            debugPrint('Background sync trigger failed: $syncError');
+            debugPrint('Local DB update failed: $syncError');
+          }
+
+          if (mounted) {
+            // Navigate to the main screen and trigger auto-sync if requested
+            Navigator.of(context).pushNamedAndRemoveUntil(
+              '/observations', 
+              (route) => false, 
+              arguments: _shouldAutoSync ? {'autoSync': true} : null
+            );
           }
         } else {
           _isNavigating = false;
