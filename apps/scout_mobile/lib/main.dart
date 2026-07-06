@@ -15,9 +15,6 @@ void main() async {
   // Initialize NetworkService & local database wrapper
   await NetworkService.instance.init();
   await ObservationLocalDb.instance.open();
-  
-  final pending = await ObservationLocalDb.instance.getPending();
-  final hasPending = pending.isNotEmpty;
 
-  runApp(MyApp(hasPending: hasPending));
+  runApp(const MyApp());
 }
