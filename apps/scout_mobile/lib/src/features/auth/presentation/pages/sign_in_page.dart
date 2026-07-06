@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import 'package:core/core.dart';
 import 'package:shared_services/shared_services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:scout_mobile/src/features/observations/data/observation_local_db.dart';
 
 class SignInPage extends StatefulWidget {
   const SignInPage({super.key});
@@ -23,16 +22,6 @@ class _SignInPageState extends State<SignInPage> {
   
   late final StreamSubscription<AuthState> _authSubscription;
   String? _username;
-  bool _shouldAutoSync = false;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final args = ModalRoute.of(context)?.settings.arguments;
-    if (args is Map && args['autoSync'] == true) {
-      _shouldAutoSync = true;
-    }
-  }
 
   @override
   void initState() {
@@ -81,22 +70,11 @@ class _SignInPageState extends State<SignInPage> {
           if (data.event == AuthChangeEvent.signedIn) {
             _showToast('Welcome, ${_username ?? "User"}', isError: false);
           }
-          try {
-            final pending = await ObservationLocalDb.instance.getPending();
-            if (pending.isNotEmpty) {
-              final db = await ObservationLocalDb.instance.database;
-              await db.update('cached_observations', {'user_id': user.id});
-            }
-          } catch (syncError) {
-            debugPrint('Local DB update failed: $syncError');
-          }
 
           if (mounted) {
-            // Navigate to the main screen and trigger auto-sync if requested
             Navigator.of(context).pushNamedAndRemoveUntil(
               '/observations', 
-              (route) => false, 
-              arguments: _shouldAutoSync ? {'autoSync': true} : null
+              (route) => false,
             );
           }
         } else {
