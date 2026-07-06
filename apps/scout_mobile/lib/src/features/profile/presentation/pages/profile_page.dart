@@ -6,7 +6,6 @@ import 'package:mime/mime.dart';
 import 'package:core/core.dart';
 import 'package:shared_services/shared_services.dart';
 import 'package:scout_mobile/src/core/services/network_service.dart';
-import '../../../observations/data/observation_local_db.dart';
 
 class ProfilePage extends StatefulWidget {
   const ProfilePage({super.key});
@@ -30,23 +29,12 @@ class _ProfilePageState extends State<ProfilePage> {
 
   Map<String, dynamic>? _profile;
   DateTime? _lastBackPress;
-  int _pendingCount = 0;
 
   @override
   void initState() {
     super.initState();
-    _checkPending();
     if (NetworkService.instance.isOnline && Supabase.instance.client.auth.currentUser != null) {
       _fetchProfile();
-    }
-  }
-
-  Future<void> _checkPending() async {
-    final pending = await ObservationLocalDb.instance.getPending();
-    if (mounted) {
-      setState(() {
-        _pendingCount = pending.length;
-      });
     }
   }
 
@@ -310,13 +298,15 @@ class _ProfilePageState extends State<ProfilePage> {
           children: [
             Icon(Icons.cloud_off_rounded, size: 80, color: Colors.grey[400]),
             const SizedBox(height: 20),
-            const Text(
-              "You're Offline",
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black87),
+            Text(
+              isOnline ? "Sign In Required" : "You're Offline",
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black87),
             ),
             const SizedBox(height: 12),
             Text(
-              "You can still record observations offline. Once you connect to the internet, you can sign in to sync your data.",
+              isOnline 
+                  ? "Sign in to view your profile and sync your data."
+                  : "You can still record observations offline. Once you connect to the internet, you can sign in to sync your data.",
               style: TextStyle(fontSize: 14, color: Colors.grey[600]),
               textAlign: TextAlign.center,
             ),
@@ -329,50 +319,8 @@ class _ProfilePageState extends State<ProfilePage> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               ),
               onPressed: isOnline
-                  ? () async {
-                      final pendingCount = (await ObservationLocalDb.instance.getPending()).length;
-                      if (!mounted) return;
-                      
-                      if (pendingCount > 0) {
-                        final shouldSync = await showDialog<bool>(
-                          context: context,
-                          builder: (context) => AlertDialog(
-                            title: const Text('Sync Offline Observations'),
-                            content: Text(
-                              'You have $pendingCount offline observations waiting to sync. For security purposes, to ensure these observations are attributed to the correct account, your sign in credentials will be asked to verify your credentials. Do you wish to proceed?'
-                            ),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.of(context).pop(false),
-                                child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-                              ),
-                              ElevatedButton(
-                                onPressed: () => Navigator.of(context).pop(true),
-                                style: ElevatedButton.styleFrom(backgroundColor: Colors.green[700], foregroundColor: Colors.white),
-                                child: const Text('Proceed'),
-                              ),
-                            ],
-                          ),
-                        );
-                        if (shouldSync != true) return;
-                        
-                        try {
-                          await Supabase.instance.client.auth.signOut();
-                        } catch (e) {
-                          debugPrint('Sign out error: $e');
-                        }
-                        
-                        if (!mounted) return;
-                        
-                        if (Supabase.instance.client.auth.currentUser != null) {
-                          _showToast('Failed to securely sign out. Please check your connection and try again.');
-                          return;
-                        }
-                        
-                        Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false, arguments: {'autoSync': true});
-                      } else {
-                        Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
-                      }
+                  ? () {
+                      Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
                     }
                   : null,
               icon: const Icon(Icons.login),
@@ -688,7 +636,7 @@ class _ProfilePageState extends State<ProfilePage> {
       builder: (context, snapshot) {
         final isOnline = snapshot.data ?? false;
         final hasSession = Supabase.instance.client.auth.currentSession != null;
-        final showOffline = !hasSession || !isOnline || _pendingCount > 0;
+        final showOffline = !hasSession || !isOnline;
 
         // If online but we have no profile loaded yet, try fetching it
         if (isOnline && hasSession && _profile == null && !_isLoading) {
