@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle, SystemNavigator;
@@ -5,6 +6,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
+import 'package:shared_services/shared_services.dart';
 import 'package:scout_mobile/src/core/services/network_service.dart';
 
 class MapPage extends StatefulWidget {
@@ -37,10 +39,13 @@ class _MapPageState extends State<MapPage> {
   bool _showKriging = false;
   int _caSteps = 5;
 
+  StreamSubscription<bool>? _networkSub;
+
   @override
   void initState() {
     super.initState();
-    if (NetworkService.instance.isOnline) {
+    final hasSession = Supabase.instance.client.auth.currentSession != null;
+    if (NetworkService.instance.isOnline && hasSession) {
       _loadCountryBoundary();
       _fetchIDW();
       _fetchForecast(_caSteps);
@@ -48,6 +53,26 @@ class _MapPageState extends State<MapPage> {
     } else {
       _isLoading = false;
     }
+
+    _networkSub = NetworkService.instance.onConnectivityChanged.listen((isOnline) {
+      if (!mounted) return;
+      final hasSession = Supabase.instance.client.auth.currentSession != null;
+      if (isOnline && hasSession && _countryPolygons.isEmpty && !_isIdwLoading && !_isCaLoading && !_isKrigingLoading) {
+        setState(() {
+          _isLoading = true;
+        });
+        _loadCountryBoundary();
+        _fetchIDW();
+        _fetchForecast(_caSteps);
+        _fetchKriging();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _networkSub?.cancel();
+    super.dispose();
   }
 
   // Loads the country boundary once and caches polygons
@@ -474,6 +499,49 @@ class _MapPageState extends State<MapPage> {
     );
   }
 
+  Widget _buildSignInPlaceholder() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.lock_outline_rounded, size: 80, color: Colors.grey[400]),
+            const SizedBox(height: 20),
+            const Text(
+              "Sign In Required",
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black87),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              "Sign in to your account to access the spatial map and simulation features.",
+              style: TextStyle(fontSize: 14, color: Colors.grey[600]),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 32),
+            FilledButton.icon(
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.green[700],
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              ),
+              onPressed: () {
+                Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
+              },
+              icon: const Icon(Icons.login),
+              label: const Text(
+                "Sign In Now",
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<bool>(
@@ -516,7 +584,9 @@ class _MapPageState extends State<MapPage> {
             ),
           body: !isOnline
               ? _buildOfflinePlaceholder()
-              : Stack(
+              : Supabase.instance.client.auth.currentSession == null
+                  ? _buildSignInPlaceholder()
+                  : Stack(
                   children: [
                     FlutterMap(
                       options: const MapOptions(
@@ -608,7 +678,7 @@ class _MapPageState extends State<MapPage> {
                         ),
                       ),
                   ],
-                ),
+                ), // closes ternary for sign-in check
           bottomNavigationBar: Container(
             decoration: BoxDecoration(
               boxShadow: [
