@@ -79,6 +79,17 @@ class ObservationLocalDb {
     return List.generate(maps.length, (i) => CachedObservation.fromMap(maps[i]));
   }
 
+  Future<CachedObservation?> getById(String observationId) async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      'cached_observations',
+      where: 'observation_id = ?',
+      whereArgs: [observationId],
+    );
+    if (maps.isEmpty) return null;
+    return CachedObservation.fromMap(maps.first);
+  }
+
   Future<void> deleteObservation(String observationId) async {
     final db = await database;
     await db.delete(
