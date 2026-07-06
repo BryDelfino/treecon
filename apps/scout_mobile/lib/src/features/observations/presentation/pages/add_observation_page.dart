@@ -7,7 +7,6 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_services/shared_services.dart';
 import 'package:uuid/uuid.dart';
-import 'package:scout_mobile/src/core/services/network_service.dart';
 import '../../data/cached_observation.dart';
 import '../../data/observation_local_db.dart';
 
@@ -142,9 +141,7 @@ class _AddObservationPageState extends State<AddObservationPage> {
 
       if (mounted) {
         _showSnackBar(
-          NetworkService.instance.isOnline
-              ? 'Saved observation. Uploading shortly...'
-              : 'Saved locally. Will sync automatically when online.',
+          'Observation saved locally.',
           isError: false,
         );
         Navigator.of(context).pop(true);
