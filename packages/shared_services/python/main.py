@@ -14,10 +14,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class IDWRequest(BaseModel):
-    grid_resolution: float = 0.08
-    power: float = 2.0
-
 class CARequest(BaseModel):
     steps: int = 5
     grid_resolution: float = 0.08
@@ -29,18 +25,6 @@ from fastapi import HTTPException
 @app.get("/")
 def read_root():
     return {"status": "running", "engine": "Treecon Spatial Engine"}
-
-@app.post("/api/idw")
-def get_idw(req: IDWRequest):
-    try:
-        result = simulation.run_idw(
-            grid_resolution=req.grid_resolution,
-            power=req.power
-        )
-        return result
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"IDW Error: {str(e)}")
 
 @app.post("/api/forecast")
 def get_forecast(req: CARequest):
