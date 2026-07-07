@@ -51,6 +51,27 @@ def load_boundary():
         simplified = simplified.buffer(0)
     return simplified
 
+def get_admin_features():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    json_path = os.path.join(base_dir, "..", "..", "..", "apps", "commander_web", "assets", "philippines.json")
+    
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+    
+    features = []
+    if data.get('type') == 'FeatureCollection' and 'features' in data:
+        for feature in data['features']:
+            if 'geometry' in feature:
+                geom = shape(feature['geometry'])
+                if not geom.is_valid:
+                    geom = geom.buffer(0)
+                
+                features.append({
+                    'geometry': geom,
+                    'properties': feature.get('properties', {})
+                })
+    return features
+
 def _filter_polygons(geom):
     if geom.is_empty:
         return None
@@ -83,116 +104,6 @@ def get_color_for_value(val):
         return "#F44336"  # Red: High
     else:
         return "#800000"  # Maroon: Severe
-
-def run_idw(grid_resolution=0.12, power=2.0):
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    csv_path = os.path.join(base_dir, "..", "..", "..", "tulod_falcata_spatial_data.csv")
-    
-    df = pd.read_csv(csv_path)
-    points = df[['longitude', 'latitude']].values
-    values = df['severity_index_pct'].values
-    
-    min_lng, max_lng = df['longitude'].min() - 0.2, df['longitude'].max() + 0.2
-    min_lat, max_lat = df['latitude'].min() - 0.2, df['latitude'].max() + 0.2
-    
-    boundary = load_boundary()
-    min_lng, min_lat, max_lng, max_lat = boundary.bounds
-    
-    # Target resolution of ~0.05 degrees per cell (matching original resolution)
-    resolution = 0.05
-    nx = int(np.ceil((max_lng - min_lng) / resolution))
-    ny = int(np.ceil((max_lat - min_lat) / resolution))
-    
-    # Create a dense grid for smooth curve calculations
-    grid_lng = np.linspace(min_lng, max_lng, nx)
-    grid_lat = np.linspace(min_lat, max_lat, ny)
-    grid_lng_mesh, grid_lat_mesh = np.meshgrid(grid_lng, grid_lat)
-    grid_points = np.vstack([grid_lng_mesh.ravel(), grid_lat_mesh.ravel()]).T
-    
-    # IDW matrix operations
-    dist_mat = distance_matrix(grid_points, points)
-    min_distances = dist_mat.min(axis=1)
-    dist_mat = np.where(dist_mat == 0, 1e-12, dist_mat)
-    
-    weights = 1.0 / (dist_mat ** power)
-    weights /= weights.sum(axis=1, keepdims=True)
-    
-    idw_values = np.dot(weights, values)
-    # Apply distance threshold: if the nearest point is further than 1.5 degrees, force to 0.0
-    idw_values = np.where(min_distances > 1.5, 0.0, idw_values).reshape(ny, nx)
-    
-    # Levels mapping for contour curves
-    levels = [0.0, 10.0, 25.0, 50.0, 75.0, 100.0]
-    
-    fig, ax = plt.subplots()
-    cs = ax.contourf(grid_lng_mesh, grid_lat_mesh, idw_values, levels=levels)
-    
-    features = []
-
-    # Handle contour collections for both newer and older Matplotlib versions
-    if hasattr(cs, 'collections') and cs.collections:
-        contour_iter = cs.collections
-    else:
-        # Older versions: use allsegs (list of segments per level)
-        contour_iter = None
-
-    if contour_iter is not None:
-        for level_idx, collection in enumerate(contour_iter):
-            val_lower = levels[level_idx]
-            val_upper = levels[level_idx + 1]
-            color = get_color_for_value((val_lower + val_upper) / 2.0)
-
-            paths = collection.get_paths()
-            polygons = []
-            for path in paths:
-                for path_seg in path.to_polygons():
-                    if len(path_seg) >= 3:
-                        poly = Polygon(path_seg)
-                        if not poly.is_valid:
-                            poly = poly.buffer(0)
-                        if poly.is_valid and not poly.is_empty:
-                            polygons.append(poly)
-
-            if polygons:
-                merged_poly = unary_union(polygons)
-                clipped_poly = _filter_polygons(_safe_intersection(merged_poly, boundary))
-                if clipped_poly is not None and not clipped_poly.is_empty:
-                    features.append(geojson.Feature(
-                        geometry=clipped_poly,
-                        properties={
-                            "value_range": f"{val_lower}-{val_upper}",
-                            "color": color
-                        }
-                    ))
-    else:
-        # Fallback using allsegs (list of segments per level)
-        for level_idx, segs in enumerate(cs.allsegs):
-            val_lower = levels[level_idx]
-            val_upper = levels[level_idx + 1]
-            color = get_color_for_value((val_lower + val_upper) / 2.0)
-
-            polygons = []
-            for seg in segs:
-                if len(seg) >= 3:
-                    poly = Polygon(seg)
-                    if not poly.is_valid:
-                        poly = poly.buffer(0)
-                    if poly.is_valid and not poly.is_empty:
-                        polygons.append(poly)
-
-            if polygons:
-                merged_poly = unary_union(polygons)
-                clipped_poly = _filter_polygons(_safe_intersection(merged_poly, boundary))
-                if clipped_poly is not None and not clipped_poly.is_empty:
-                    features.append(geojson.Feature(
-                        geometry=clipped_poly,
-                        properties={
-                            "value_range": f"{val_lower}-{val_upper}",
-                            "color": color
-                        }
-                    ))
-    plt.close(fig)
-    return geojson.FeatureCollection(features)
 
 def run_ca_simulation(steps=5, grid_resolution=0.12, spread_factor=0.08):
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -239,78 +150,33 @@ def run_ca_simulation(steps=5, grid_resolution=0.12, spread_factor=0.08):
         avg_neighbor = convolve(current_grid, kernel, mode='constant', cval=0.0)
         current_grid = np.minimum(100.0, current_grid + avg_neighbor * spread_factor)
         
-    # Generate contour bands
-    levels = [0.0, 10.0, 25.0, 50.0, 75.0, 100.0]
+    admin_features = get_admin_features()
+    out_features = []
     
-    fig, ax = plt.subplots()
-    cs = ax.contourf(grid_lng_mesh, grid_lat_mesh, current_grid, levels=levels)
-    
-    features = []
-    
-    # Handle contour collections for both newer and older Matplotlib versions
-    if hasattr(cs, 'collections') and cs.collections:
-        contour_iter = cs.collections
-    else:
-        contour_iter = None
-
-    if contour_iter is not None:
-        for level_idx, collection in enumerate(contour_iter):
-            val_lower = levels[level_idx]
-            val_upper = levels[level_idx + 1]
-            color = get_color_for_value((val_lower + val_upper) / 2.0)
-
-            paths = collection.get_paths()
-            polygons = []
-            for path in paths:
-                for path_seg in path.to_polygons():
-                    if len(path_seg) >= 3:
-                        poly = Polygon(path_seg)
-                        if not poly.is_valid:
-                            poly = poly.buffer(0)
-                        if poly.is_valid and not poly.is_empty:
-                            polygons.append(poly)
-
-            if polygons:
-                merged_poly = unary_union(polygons)
-                clipped_poly = _filter_polygons(_safe_intersection(merged_poly, boundary))
-                if clipped_poly is not None and not clipped_poly.is_empty:
-                    features.append(geojson.Feature(
-                        geometry=clipped_poly,
-                        properties={
-                            "value_range": f"{val_lower}-{val_upper}",
-                            "color": color
-                        }
-                    ))
-    else:
-        # Fallback using allsegs (list of segments per level)
-        for level_idx, segs in enumerate(cs.allsegs):
-            val_lower = levels[level_idx]
-            val_upper = levels[level_idx + 1]
-            color = get_color_for_value((val_lower + val_upper) / 2.0)
-
-            polygons = []
-            for seg in segs:
-                if len(seg) >= 3:
-                    poly = Polygon(seg)
-                    if not poly.is_valid:
-                        poly = poly.buffer(0)
-                    if poly.is_valid and not poly.is_empty:
-                        polygons.append(poly)
-
-            if polygons:
-                merged_poly = unary_union(polygons)
-                clipped_poly = _filter_polygons(merged_poly.intersection(boundary))
-                if clipped_poly is not None and not clipped_poly.is_empty:
-                    features.append(geojson.Feature(
-                        geometry=clipped_poly,
-                        properties={
-                            "value_range": f"{val_lower}-{val_upper}",
-                            "color": color
-                        }
-                    ))
-                
-    plt.close(fig)
-    return geojson.FeatureCollection(features)
+    for f in admin_features:
+        geom = f['geometry']
+        props = f['properties']
+        
+        centroid = geom.centroid
+        
+        ix = int(round((centroid.x - min_lng) / resolution))
+        iy = int(round((centroid.y - min_lat) / resolution))
+        
+        ix = max(0, min(nx - 1, ix))
+        iy = max(0, min(ny - 1, iy))
+        
+        val = float(current_grid[iy, ix])
+        color = get_color_for_value(val)
+        
+        props['severity_value'] = round(val, 2)
+        props['color'] = color
+        
+        out_features.append(geojson.Feature(
+            geometry=geom,
+            properties=props
+        ))
+        
+    return geojson.FeatureCollection(out_features)
 
 def run_kriging(grid_resolution=0.12):
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -353,73 +219,31 @@ def run_kriging(grid_resolution=0.12):
     # Apply distance threshold of 1.5 degrees
     kriging_values = np.where(min_distances > 1.5, 0.0, kriging_values)
     
-    levels = [0.0, 10.0, 25.0, 50.0, 75.0, 100.0]
+    admin_features = get_admin_features()
+    out_features = []
     
-    fig, ax = plt.subplots()
-    cs = ax.contourf(grid_lng_mesh, grid_lat_mesh, kriging_values, levels=levels)
-    
-    features = []
-    
-    if hasattr(cs, 'collections') and cs.collections:
-        contour_iter = cs.collections
-    else:
-        contour_iter = None
-
-    if contour_iter is not None:
-        for level_idx, collection in enumerate(contour_iter):
-            val_lower = levels[level_idx]
-            val_upper = levels[level_idx + 1]
-            color = get_color_for_value((val_lower + val_upper) / 2.0)
-
-            paths = collection.get_paths()
-            polygons = []
-            for path in paths:
-                for path_seg in path.to_polygons():
-                    if len(path_seg) >= 3:
-                        poly = Polygon(path_seg)
-                        if not poly.is_valid:
-                            poly = poly.buffer(0)
-                        if poly.is_valid and not poly.is_empty:
-                            polygons.append(poly)
-
-            if polygons:
-                merged_poly = unary_union(polygons)
-                clipped_poly = _filter_polygons(_safe_intersection(merged_poly, boundary))
-                if clipped_poly is not None and not clipped_poly.is_empty:
-                    features.append(geojson.Feature(
-                        geometry=clipped_poly,
-                        properties={
-                            "value_range": f"{val_lower}-{val_upper}",
-                            "color": color
-                        }
-                    ))
-    else:
-        for level_idx, segs in enumerate(cs.allsegs):
-            val_lower = levels[level_idx]
-            val_upper = levels[level_idx + 1]
-            color = get_color_for_value((val_lower + val_upper) / 2.0)
-
-            polygons = []
-            for seg in segs:
-                if len(seg) >= 3:
-                    poly = Polygon(seg)
-                    if not poly.is_valid:
-                        poly = poly.buffer(0)
-                    if poly.is_valid and not poly.is_empty:
-                        polygons.append(poly)
-
-            if polygons:
-                merged_poly = unary_union(polygons)
-                clipped_poly = _filter_polygons(_safe_intersection(merged_poly, boundary))
-                if clipped_poly is not None and not clipped_poly.is_empty:
-                    features.append(geojson.Feature(
-                        geometry=clipped_poly,
-                        properties={
-                            "value_range": f"{val_lower}-{val_upper}",
-                            "color": color
-                        }
-                    ))
-                
-    plt.close(fig)
-    return geojson.FeatureCollection(features)
+    for f in admin_features:
+        geom = f['geometry']
+        props = f['properties']
+        
+        centroid = geom.centroid
+        
+        ix = int(round((centroid.x - min_lng) / resolution))
+        iy = int(round((centroid.y - min_lat) / resolution))
+        
+        ix = max(0, min(nx - 1, ix))
+        iy = max(0, min(ny - 1, iy))
+        
+        val = float(kriging_values[iy, ix])
+        color = get_color_for_value(val)
+        
+        props['severity_value'] = round(val, 2)
+        props['color'] = color
+        
+        out_features.append(geojson.Feature(
+            geometry=geom,
+            properties=props
+        ))
+        
+    return geojson.FeatureCollection(out_features)
 
