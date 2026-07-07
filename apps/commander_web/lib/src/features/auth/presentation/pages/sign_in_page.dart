@@ -11,7 +11,7 @@ class SignInPage extends StatefulWidget {
   State<SignInPage> createState() => _SignInPageState();
 }
 
-class _SignInPageState extends State<SignInPage> {
+class _SignInPageState extends State<SignInPage> with WidgetsBindingObserver {
   final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
@@ -25,6 +25,7 @@ class _SignInPageState extends State<SignInPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     
     // Listen to Auth state changes (triggers on email/password sign-in and OAuth redirect callbacks)
     _authSubscription = Supabase.instance.client.auth.onAuthStateChange.listen((data) async {
@@ -59,10 +60,22 @@ class _SignInPageState extends State<SignInPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _authSubscription.cancel();
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      if (mounted && _isLoading && !_isNavigating) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
   }
 
   void _showToast(String message, {bool isError = true}) {
@@ -184,16 +197,26 @@ class _SignInPageState extends State<SignInPage> {
       await Supabase.instance.client.auth.signInWithOAuth(
         OAuthProvider.google,
       );
+      // If the OAuth flow completes without a redirect or resumes, reset the loading state.
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     } on AuthException catch (e) {
       _showToast(e.message);
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     } catch (e) {
       _showToast('Google login failed. Please try again.');
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
