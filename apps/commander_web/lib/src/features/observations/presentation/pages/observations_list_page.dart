@@ -19,22 +19,41 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
   bool _isLoading = true;
   String? _error;
 
+  DateTime? _filterStartDate;
+  DateTime? _filterEndDate;
+  String _searchUserName = '';
+  bool? _filterIsVerified; // true for Verified, false for Unverified, null for All
+  bool _sortAscending = false;
+  
+  final int _pageSize = 21;
+  int _currentPage = 0;
+  int _totalCount = 0;
+  int get _totalPages {
+    final pages = (_totalCount / _pageSize).ceil();
+    return pages > 0 ? pages : 1;
+  }
+
   @override
   void initState() {
     super.initState();
-    _fetchObservations();
+    _fetchObservations(resetPage: true);
   }
 
   @override
   void didUpdateWidget(covariant ObservationsListPage oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.isExpertOnly != widget.isExpertOnly) {
-      _fetchObservations();
+      _fetchObservations(resetPage: true);
     }
   }
 
-  Future<void> _fetchObservations() async {
+  Future<void> _fetchObservations({bool resetPage = false}) async {
     if (!mounted) return;
+    
+    if (resetPage) {
+      _currentPage = 0;
+    }
+
     setState(() {
       _isLoading = true;
       _error = null;
@@ -46,17 +65,42 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
         throw Exception('User not authenticated');
       }
 
-      var query = Supabase.instance.client.from('observations').select('*, users(user_name)');
+      var query = Supabase.instance.client.from('observations').select('*, users!observations_user_id_fkey!inner(user_name)');
 
       if (widget.isExpertOnly) {
         query = query.eq('user_id', user.id);
+      } else if (_searchUserName.isNotEmpty) {
+        query = query.ilike('users.user_name', '%$_searchUserName%');
+      }
+      
+      if (_filterStartDate != null) {
+        query = query.gte('observation_timestamp', _filterStartDate!.toUtc().toIso8601String());
+      }
+      if (_filterEndDate != null) {
+        // Add 1 day to include the end date fully
+        query = query.lte('observation_timestamp', _filterEndDate!.add(const Duration(days: 1)).toUtc().toIso8601String());
+      }
+      
+      if (_filterIsVerified != null) {
+        if (_filterIsVerified!) {
+          query = query.eq('is_verified', true);
+        } else {
+          // Unverified can mean is_verified is false or null
+          query = query.or('is_verified.eq.false,is_verified.is.null');
+        }
       }
 
-      final data = await query.order('timestamp', ascending: false);
+      final response = await query
+          .order('observation_timestamp', ascending: _sortAscending)
+          .range(_currentPage * _pageSize, ((_currentPage + 1) * _pageSize) - 1)
+          .count(CountOption.exact);
 
       if (mounted) {
         setState(() {
+          final data = response.data;
+          _totalCount = response.count;
           _observations = (data as List<dynamic>).map((e) => e as Map<String, dynamic>).toList();
+          
           _isLoading = false;
         });
       }
@@ -71,7 +115,7 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
   }
 
   Future<void> _verifyObservation(Map<String, dynamic> obs) async {
-    final id = obs['id'];
+    final id = obs['observation_id'] ?? obs['id'];
     if (id == null) return;
 
     try {
@@ -79,7 +123,7 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
       await Supabase.instance.client
           .from('observations')
           .update({'is_verified': true})
-          .eq('id', id);
+          .eq('observation_id', id);
 
       _showToast('Observation verified successfully!', isError: false);
       _fetchObservations();
@@ -90,14 +134,14 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
         await Supabase.instance.client
             .from('observations')
             .update({'sync_status': 'verified'})
-            .eq('id', id);
+            .eq('observation_id', id);
 
         _showToast('Observation verified (status updated)!', isError: false);
         _fetchObservations();
       } catch (e2) {
         // Local simulation fallback
         setState(() {
-          final index = _observations.indexWhere((element) => element['id'] == id);
+          final index = _observations.indexWhere((element) => (element['observation_id'] ?? element['id']) == id);
           if (index != -1) {
             _observations[index]['is_verified'] = true;
             _observations[index]['sync_status'] = 'verified';
@@ -202,6 +246,135 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
     );
   }
 
+  void _showFilterModal() {
+    DateTime? tempStart = _filterStartDate;
+    DateTime? tempEnd = _filterEndDate;
+    final searchController = TextEditingController(text: _searchUserName);
+    bool? tempIsVerified = _filterIsVerified;
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setModalState) {
+            return AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              title: Row(
+                children: [
+                  Icon(Icons.filter_list, color: Colors.green[700]),
+                  const SizedBox(width: 8),
+                  const Text('Filter Observations', style: TextStyle(fontWeight: FontWeight.bold)),
+                ],
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (!widget.isExpertOnly) ...[
+                      const Text('Search by User', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: searchController,
+                        decoration: InputDecoration(
+                          hintText: 'Enter user name',
+                          prefixIcon: const Icon(Icons.person_search, size: 20),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                    ],
+                    const Text('Verification Status', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                    const SizedBox(height: 8),
+                    DropdownButtonFormField<bool?>(
+                      initialValue: tempIsVerified,
+                      decoration: InputDecoration(
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      ),
+                      items: const [
+                        DropdownMenuItem(value: null, child: Text('All Statuses')),
+                        DropdownMenuItem(value: true, child: Text('Verified Only')),
+                        DropdownMenuItem(value: false, child: Text('Unverified Only')),
+                      ],
+                      onChanged: (value) {
+                        setModalState(() => tempIsVerified = value);
+                      },
+                    ),
+                    const SizedBox(height: 20),
+                    const Text('Date Range', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                    const SizedBox(height: 8),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.calendar_today, color: Colors.green[700], size: 20),
+                      title: Text(tempStart != null ? tempStart!.toLocal().toString().substring(0, 10) : 'Start Date'),
+                      onTap: () async {
+                        final picked = await showDatePicker(
+                          context: context,
+                          initialDate: tempStart ?? DateTime.now(),
+                          firstDate: DateTime(2020),
+                          lastDate: DateTime.now(),
+                        );
+                        if (picked != null) setModalState(() => tempStart = picked);
+                      },
+                    ),
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: Icon(Icons.event, color: Colors.green[700], size: 20),
+                      title: Text(tempEnd != null ? tempEnd!.toLocal().toString().substring(0, 10) : 'End Date'),
+                      onTap: () async {
+                        final picked = await showDatePicker(
+                          context: context,
+                          initialDate: tempEnd ?? DateTime.now(),
+                          firstDate: DateTime(2020),
+                          lastDate: DateTime.now(),
+                        );
+                        if (picked != null) setModalState(() => tempEnd = picked);
+                      },
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      _filterStartDate = null;
+                      _filterEndDate = null;
+                      _searchUserName = '';
+                      _filterIsVerified = null;
+                    });
+                    Navigator.pop(context);
+                    _fetchObservations(resetPage: true);
+                  },
+                  child: Text('Clear', style: TextStyle(color: Colors.grey[700])),
+                ),
+                FilledButton(
+                  onPressed: () {
+                    setState(() {
+                      _filterStartDate = tempStart;
+                      _filterEndDate = tempEnd;
+                      _searchUserName = searchController.text.trim();
+                      _filterIsVerified = tempIsVerified;
+                    });
+                    Navigator.pop(context);
+                    _fetchObservations(resetPage: true);
+                  },
+                  style: FilledButton.styleFrom(
+                    backgroundColor: Colors.green[700],
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: const Text('Apply'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   void _showAddObservationPlaceholder() {
     showDialog(
       context: context,
@@ -256,9 +429,19 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
         elevation: 1,
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh, color: Colors.black54),
-            onPressed: _fetchObservations,
-            tooltip: 'Refresh',
+            icon: Icon(_sortAscending ? Icons.arrow_upward : Icons.arrow_downward, color: Colors.black54),
+            onPressed: () {
+              setState(() {
+                _sortAscending = !_sortAscending;
+              });
+              _fetchObservations(resetPage: true);
+            },
+            tooltip: _sortAscending ? 'Sort by date of observation (Newest first)' : 'Sort by date of observation (Oldest first)',
+          ),
+          IconButton(
+            icon: const Icon(Icons.filter_list, color: Colors.black54),
+            onPressed: _showFilterModal,
+            tooltip: 'Filter',
           ),
           if (widget.isExpertOnly) ...[
             const SizedBox(width: 8),
@@ -277,6 +460,8 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                 label: const Text('Add Observation', style: TextStyle(fontWeight: FontWeight.bold)),
               ),
             ),
+          ] else ...[
+            const SizedBox(width: 12), // Adds padding to the right of the filter button
           ],
         ],
       ),
@@ -358,27 +543,31 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                 ? 2
                 : 1;
 
-        return GridView.builder(
-          padding: const EdgeInsets.all(24.0),
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: crossAxisCount,
-            crossAxisSpacing: 20,
-            mainAxisSpacing: 20,
-            mainAxisExtent: 180,
-          ),
-          itemCount: _observations.length,
-          itemBuilder: (context, index) {
+        return Column(
+          children: [
+            Expanded(
+              child: GridView.builder(
+                padding: const EdgeInsets.all(24.0),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: crossAxisCount,
+                  crossAxisSpacing: 20,
+                  mainAxisSpacing: 20,
+                  mainAxisExtent: 180,
+                ),
+                itemCount: _observations.length,
+                itemBuilder: (context, index) {
             final obs = _observations[index];
-            final severity = obs['final_severity']?.toString() ?? 'unknown';
+            final severity = obs['confidence_score'] != null ? 'high' : 'unknown';
             final severityColor = _getSeverityColor(severity);
-            final dateStr = obs['timestamp'] != null
-                ? DateTime.tryParse(obs['timestamp'])?.toLocal().toString().substring(0, 16) ?? obs['timestamp']
+            final rawTimestamp = obs['observation_timestamp'] ?? obs['upload_timestamp'];
+            final dateStr = rawTimestamp != null
+                ? DateTime.tryParse(rawTimestamp.toString())?.toLocal().toString().substring(0, 16) ?? rawTimestamp.toString()
                 : 'N/A';
             final coords = _parseCoordinates(obs['coordinates']);
             final latStr = coords != null ? coords['lat']!.toStringAsFixed(6) : 'N/A';
             final lngStr = coords != null ? coords['lng']!.toStringAsFixed(6) : 'N/A';
-            final captureMethod = obs['capture_method']?.toString() ?? 'UPLOAD';
-            final evaluationMethod = obs['evaluation_method']?.toString() ?? 'CNN';
+            final captureMethod = obs['source']?.toString() ?? 'UPLOAD';
+            const evaluationMethod = 'MANUAL';
             final imageUrl = obs['image_url']?.toString();
             final isVerified = obs['is_verified'] == true || obs['sync_status'] == 'verified';
             final contributorName = obs['users'] != null && obs['users'] is Map
@@ -560,6 +749,76 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
               ),
             );
           },
+        ),
+            ),
+            if (_totalPages > 1)
+              Padding(
+                padding: const EdgeInsets.only(right: 24.0, bottom: 24.0, top: 8.0),
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        onPressed: _currentPage > 0 ? () { setState(() => _currentPage = 0); _fetchObservations(); } : null,
+                        icon: const Icon(Icons.first_page),
+                        tooltip: 'First Page',
+                        style: IconButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                      ),
+                      IconButton(
+                        onPressed: _currentPage > 0 ? () { setState(() => _currentPage--); _fetchObservations(); } : null,
+                        icon: const Icon(Icons.chevron_left),
+                        tooltip: 'Previous Page',
+                        style: IconButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                      ),
+                      
+                      ...List.generate(_totalPages, (index) {
+                        if (index == 0 || index == _totalPages - 1 || (index >= _currentPage - 2 && index <= _currentPage + 2)) {
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 2.0),
+                            child: ElevatedButton(
+                              onPressed: _currentPage == index ? null : () {
+                                setState(() => _currentPage = index);
+                                _fetchObservations();
+                              },
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: _currentPage == index ? Colors.green[700] : Colors.white,
+                                foregroundColor: _currentPage == index ? Colors.white : Colors.black87,
+                                minimumSize: const Size(36, 36),
+                                padding: EdgeInsets.zero,
+                                elevation: _currentPage == index ? 2 : 0,
+                                side: BorderSide(color: Colors.grey[300]!),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                              ),
+                              child: Text('${index + 1}'),
+                            ),
+                          );
+                        } else if (index == _currentPage - 3 || index == _currentPage + 3) {
+                          return const Padding(
+                            padding: EdgeInsets.symmetric(horizontal: 4.0),
+                            child: Text('...'),
+                          );
+                        }
+                        return const SizedBox.shrink();
+                      }),
+
+                      IconButton(
+                        onPressed: _currentPage < _totalPages - 1 ? () { setState(() => _currentPage++); _fetchObservations(); } : null,
+                        icon: const Icon(Icons.chevron_right),
+                        tooltip: 'Next Page',
+                        style: IconButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                      ),
+                      IconButton(
+                        onPressed: _currentPage < _totalPages - 1 ? () { setState(() => _currentPage = _totalPages - 1); _fetchObservations(); } : null,
+                        icon: const Icon(Icons.last_page),
+                        tooltip: 'Last Page',
+                        style: IconButton.styleFrom(shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8))),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
         );
       },
     );
