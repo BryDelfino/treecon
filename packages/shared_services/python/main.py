@@ -48,6 +48,20 @@ def get_kriging():
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Kriging Error: {str(e)}")
 
+@app.get("/api/plantations")
+def get_plantations():
+    import os
+    import pandas as pd
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        csv_path = os.path.join(base_dir, "..", "..", "..", "tulod_falcata_spatial_data.csv")
+        df = pd.read_csv(csv_path)
+        df = df.fillna("")
+        return df.to_dict(orient="records")
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Plantations Error: {str(e)}")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
