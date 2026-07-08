@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_marker_cluster/flutter_map_marker_cluster.dart';
 import 'package:latlong2/latlong.dart';
@@ -34,10 +36,15 @@ class _MapPageState extends State<MapPage> {
   bool _isPlantationExpanded = false;
   
   // Observations state
-  bool _showVerifiedObservations = true;
-  bool _showUnverifiedObservations = true;
+  String _selectedObservationVerification = 'All';
+  String _selectedObservationUserRole = 'All';
+
+  final List<String> _availableVerificationStatuses = ['All', 'Verified', 'Unverified'];
+  final List<String> _availableUserRoles = ['All', 'Expert', 'Community'];
+  bool _showObservations = true;
   bool _isObservationsExpanded = true;
   bool _isObservationsLoading = false;
+  bool _isControlsCollapsed = false;
   List<Map<String, dynamic>> _observationsData = [];
   Map<String, dynamic>? _selectedObservation;
   String _selectedObservationProvince = 'All';
@@ -61,6 +68,22 @@ class _MapPageState extends State<MapPage> {
 
   Map<String, dynamic>? _selectedRegionProps;
   LatLng? _selectedRegionLocation;
+  final Map<String, String> _provinceToRegion = {};
+
+  bool _isSatellite = false;
+  double _currentZoom = 6.0;
+  double _currentRotation = 0.0;
+  LatLng _mapCenter = const LatLng(12.8797, 121.7740);
+
+  String _getScaleText() {
+    final metersPerPixel = 156543.03392 * math.cos(_mapCenter.latitude * math.pi / 180) / math.pow(2, _currentZoom);
+    final distanceMeters = 60 * metersPerPixel;
+    if (distanceMeters >= 1000) {
+      return '${(distanceMeters / 1000).toStringAsFixed(1)} km';
+    } else {
+      return '${distanceMeters.toStringAsFixed(0)} m';
+    }
+  }
 
   String _getSeverityClass(double value) {
     if (value < 10.0) return "Healthy";
@@ -100,12 +123,93 @@ class _MapPageState extends State<MapPage> {
       final props = poly.hitValue as Map<String, dynamic>?;
       if (props != null) {
         final name = props['adm2_name'] as String?;
-        if (name != null) provinces.add(name);
+        final region = props['adm1_name'] as String?;
+        if (name != null) {
+          provinces.add(name);
+          if (region != null && region.isNotEmpty) {
+            _provinceToRegion[name] = region;
+          }
+        }
       }
     }
     final list = provinces.toList();
-    list.sort((a, b) => a == 'All' ? -1 : (b == 'All' ? 1 : a.compareTo(b)));
+    list.sort((a, b) {
+      if (a == 'All') return -1;
+      if (b == 'All') return 1;
+      final regionA = _provinceToRegion[a] ?? '';
+      final regionB = _provinceToRegion[b] ?? '';
+      final regionCompare = regionA.compareTo(regionB);
+      if (regionCompare != 0) return regionCompare;
+      return a.compareTo(b);
+    });
     return list;
+  }
+
+  List<DropdownMenuItem<String>> _buildProvinceDropdownItems() {
+    final items = <DropdownMenuItem<String>>[];
+    items.add(
+      const DropdownMenuItem(
+        value: 'All',
+        child: Text('All Provinces', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+      )
+    );
+    
+    final grouped = <String, List<String>>{};
+    for (final prov in _availableProvinces) {
+      if (prov == 'All') continue;
+      final region = _provinceToRegion[prov] ?? 'Other Regions';
+      grouped.putIfAbsent(region, () => []).add(prov);
+    }
+    
+    final sortedRegions = grouped.keys.toList()..sort();
+    for (final region in sortedRegions) {
+      items.add(
+        DropdownMenuItem(
+          value: 'HEADER_$region',
+          enabled: false,
+          child: Text(
+            region,
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.green.shade800),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        )
+      );
+      for (final prov in grouped[region]!) {
+        items.add(
+          DropdownMenuItem(
+            value: prov,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 16.0),
+              child: Text(
+                prov, 
+                style: const TextStyle(fontSize: 12),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          )
+        );
+      }
+    }
+    return items;
+  }
+
+  List<Widget> _buildProvinceSelectedItems(BuildContext context) {
+    return _buildProvinceDropdownItems().map((item) {
+      if (item.value?.startsWith('HEADER_') == true) return const SizedBox.shrink();
+      if (item.value == 'All') return const Align(alignment: Alignment.centerLeft, child: Text('All Provinces', style: TextStyle(fontSize: 12)));
+      final prov = item.value!;
+      return Align(
+        alignment: Alignment.centerLeft, 
+        child: Text(
+          prov, 
+          style: const TextStyle(fontSize: 12),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      );
+    }).toList();
   }
 
   String _getProvinceForObservation(LatLng point) {
@@ -278,10 +382,17 @@ class _MapPageState extends State<MapPage> {
   @override
   void initState() {
     super.initState();
+    BrowserContextMenu.disableContextMenu();
     _fetchForecast(_caSteps);
     _fetchKriging();
     _fetchPlantations();
     _fetchObservations();
+  }
+
+  @override
+  void dispose() {
+    BrowserContextMenu.enableContextMenu();
+    super.dispose();
   }
 
   Future<void> _fetchObservations() async {
@@ -293,7 +404,7 @@ class _MapPageState extends State<MapPage> {
 
       final response = await Supabase.instance.client
           .from('observations')
-          .select()
+          .select('*, users!observations_user_id_fkey(user_name, role)')
           .order('observation_timestamp', ascending: false);
 
       debugPrint('[OBS] Raw response type: ${response.runtimeType}');
@@ -561,8 +672,16 @@ class _MapPageState extends State<MapPage> {
       // Skip deleted observations
       if (obs['is_deleted'] == true) return false;
       final isVerified = obs['is_verified'] == true || obs['sync_status'] == 'verified';
-      if (isVerified && !_showVerifiedObservations) return false;
-      if (!isVerified && !_showUnverifiedObservations) return false;
+      if (_selectedObservationVerification == 'Verified' && !isVerified) return false;
+      if (_selectedObservationVerification == 'Unverified' && isVerified) return false;
+      
+      final role = obs['users'] != null && obs['users'] is Map
+          ? (obs['users'] as Map)['role']?.toString().toUpperCase()
+          : null;
+      final isExpert = role == 'EXPERT';
+      if (_selectedObservationUserRole == 'Expert' && !isExpert) return false;
+      if (_selectedObservationUserRole == 'Community' && isExpert) return false;
+
       return _isObservationInProvince(obs, _selectedObservationProvince);
     }).toList();
     debugPrint('[OBS] _buildObservationMarkers: ${filtered.length} markers after filtering');
@@ -665,7 +784,34 @@ class _MapPageState extends State<MapPage> {
                     ],
                   ),
                   const SizedBox(height: 4),
-                  Text("Observation ID: ${obs['observation_id'] ?? 'Unknown'}", style: const TextStyle(fontSize: 12)),
+                  Builder(
+                    builder: (context) {
+                      final contributorName = obs['users'] != null && obs['users'] is Map
+                          ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
+                          : 'Unknown User';
+                      final role = obs['users'] != null && obs['users'] is Map
+                          ? (obs['users'] as Map)['role']?.toString().toUpperCase()
+                          : null;
+                      final isExpert = role == 'EXPERT';
+                      return Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.person, size: 14, color: Colors.grey),
+                          const SizedBox(width: 4),
+                          Text(contributorName, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          if (isExpert) ...[
+                            const SizedBox(width: 4),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                              decoration: BoxDecoration(color: Colors.blue.shade100, borderRadius: BorderRadius.circular(4)),
+                              child: Text('EXPERT', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.blue.shade900)),
+                            ),
+                          ],
+                        ],
+                      );
+                    }
+                  ),
+                  const SizedBox(height: 4),
                   Text("Date: $date", style: const TextStyle(fontSize: 12)),
                   Text("Province: $province", style: const TextStyle(fontSize: 12)),
                   Text("Lat/Lng: ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}", style: const TextStyle(fontSize: 12)),
@@ -832,12 +978,32 @@ class _MapPageState extends State<MapPage> {
       ),
       body: Stack(
         children: [
+          Row(
+            children: [
+          Expanded(
+            child: Listener(
+              onPointerMove: (event) {
+                if (event.buttons == 2) {
+                  final newRotation = _currentRotation + (event.delta.dx * 0.5);
+                  _mapController.rotate(newRotation);
+                }
+              },
+              child: Stack(
+                children: [
           FlutterMap(
             mapController: _mapController,
             options: MapOptions(
               initialCenter: const LatLng(12.8797, 121.7740),
               initialZoom: 6,
               minZoom: 6,
+              maxZoom: 17.0,
+              onPositionChanged: (camera, hasGesture) {
+                setState(() {
+                  _currentZoom = camera.zoom;
+                  _currentRotation = camera.rotation;
+                  _mapCenter = camera.center;
+                });
+              },
               onTap: (tapPosition, point) {
                 final hitResult = _hitNotifier.value;
                 if (hitResult != null && hitResult.hitValues.isNotEmpty) {
@@ -856,7 +1022,9 @@ class _MapPageState extends State<MapPage> {
             ),
             children: [
               TileLayer(
-                urlTemplate: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
+                urlTemplate: _isSatellite
+                    ? 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
+                    : 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}',
                 userAgentPackageName: 'com.treecon.commander',
               ),
               // 2. Dynamic simulation contour layers
@@ -934,7 +1102,7 @@ class _MapPageState extends State<MapPage> {
                 ),
 
               // Observations Layer
-              if ((_showVerifiedObservations || _showUnverifiedObservations) && _observationsData.isNotEmpty)
+              if (_showObservations && _observationsData.isNotEmpty)
                 MarkerClusterLayerWidget(
                   options: MarkerClusterLayerOptions(
                     maxClusterRadius: 45,
@@ -981,44 +1149,188 @@ class _MapPageState extends State<MapPage> {
                     ],
                   );
                 }),
+              
+              // Map Overlay Controls
+              Positioned(
+                top: 16,
+                right: 16,
+                child: Column(
+                  children: [
+                    // Zoom In/Out
+                    Container(
+                      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(4), boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)]),
+                      child: Column(
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.add, size: 20),
+                            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                            padding: EdgeInsets.zero,
+                            onPressed: () => _mapController.move(_mapController.camera.center, _mapController.camera.zoom + 1),
+                          ),
+                          Container(height: 1, width: 36, color: Colors.grey.shade300),
+                          IconButton(
+                            icon: const Icon(Icons.remove, size: 20),
+                            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                            padding: EdgeInsets.zero,
+                            onPressed: () => _mapController.move(_mapController.camera.center, _mapController.camera.zoom - 1),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    // Compass / Reset Rotation
+                    Container(
+                      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(4), boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)]),
+                      child: IconButton(
+                        tooltip: 'Reset Rotation',
+                        icon: Transform.rotate(
+                          angle: -(_currentRotation * math.pi / 180),
+                          child: Transform.scale(
+                            scaleY: 1.5,
+                            child: Transform.rotate(
+                              angle: math.pi / 4,
+                              child: Container(
+                                width: 10,
+                                height: 10,
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topLeft,
+                                    end: Alignment.bottomRight,
+                                    colors: [Colors.red.shade600, Colors.red.shade600, Colors.grey.shade400, Colors.grey.shade400],
+                                    stops: const [0.0, 0.5, 0.5, 1.0],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                        padding: EdgeInsets.zero,
+                        onPressed: () {
+                          _mapController.rotate(0);
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    // Map Type Toggle
+                    Container(
+                      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(4), boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)]),
+                      child: IconButton(
+                        icon: Icon(_isSatellite ? Icons.map : Icons.satellite_alt, size: 20),
+                        constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                        padding: EdgeInsets.zero,
+                        onPressed: () {
+                          setState(() {
+                            _isSatellite = !_isSatellite;
+                          });
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    // Scale Bar
+                    Container(
+                      width: 60, // Fixed pixel width for calculation
+                      height: 24,
+                      decoration: BoxDecoration(
+                        color: Colors.white.withAlpha(204),
+                        border: Border.all(color: Colors.black54),
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        _getScaleText(),
+                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
             ],
           ),
           
-          // Floating Settings Controls
-          Positioned(
-            top: 16,
-              right: 16,
+          if (_isCaLoading || _isKrigingLoading || _isPlantationsLoading || _isObservationsLoading)
+            Center(
+              child: Card(
+                elevation: 4,
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const CircularProgressIndicator(color: Colors.green),
+                      const SizedBox(width: 16),
+                      Text((_isCaLoading && _isKrigingLoading)
+                          ? "Fetching simulation layers..."
+                          : _isCaLoading
+                              ? "Fetching CA forecast..."
+                              : _isKrigingLoading
+                                  ? "Fetching Kriging contours..."
+                                  : _isPlantationsLoading 
+                                      ? "Loading plantation points..."
+                                      : "Loading observations..."),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+
+              ],
+            ),
+            ),
+          ),
+          
+          // Dedicated Side Bar Settings Controls
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+            width: _isControlsCollapsed ? 0 : 320,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              border: Border(left: BorderSide(color: Colors.grey.shade300)),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.05),
+                  blurRadius: 4,
+                  offset: const Offset(-2, 0),
+                )
+              ],
+            ),
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              physics: const NeverScrollableScrollPhysics(),
               child: SizedBox(
                 width: 320,
-                child: Card(
-                  elevation: 8,
-                  // ignore: deprecated_member_use
-                  shadowColor: Colors.black.withValues(alpha: 0.3),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                  padding: const EdgeInsets.all(16.0),
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade50,
+                    border: Border(bottom: BorderSide(color: Colors.grey.shade300)),
                   ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(
-                          children: [
-                            Icon(Icons.layers_outlined, color: Colors.green.shade700),
-                            const SizedBox(width: 8),
-                            const Text(
-                              "Map Controls & Settings",
-                              style: TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ],
+                  child: Row(
+                    children: [
+                      Icon(Icons.layers_outlined, color: Colors.green.shade700),
+                      const SizedBox(width: 8),
+                      const Text(
+                        "Map Controls & Settings",
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
                         ),
-                        const Divider(height: 20),
-
-                        // Accordions
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Accordions
                         ExpansionTile(
                           title: const Text("CA Spread Forecast", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
                           leading: Icon(Icons.online_prediction, color: _showCA ? Colors.green.shade700 : Colors.grey),
@@ -1198,12 +1510,8 @@ class _MapPageState extends State<MapPage> {
                             DropdownButton<String>(
                               isExpanded: true,
                               value: _selectedPlantationProvince,
-                              items: _availableProvinces.map((prov) {
-                                return DropdownMenuItem(
-                                  value: prov,
-                                  child: Text(prov, style: const TextStyle(fontSize: 12)),
-                                );
-                              }).toList(),
+                              items: _buildProvinceDropdownItems(),
+                              selectedItemBuilder: _buildProvinceSelectedItems,
                                 onChanged: (val) {
                                   if (val != null) {
                                     setState(() {
@@ -1246,10 +1554,25 @@ class _MapPageState extends State<MapPage> {
                         // Field Observations Toggle
                         ExpansionTile(
                           title: const Text("Field Observations", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-                          leading: Icon(Icons.person_pin_circle, color: (_showVerifiedObservations || _showUnverifiedObservations) ? Colors.blue.shade700 : Colors.grey),
-                          trailing: Icon(
-                            _isObservationsExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
-                            color: Colors.grey,
+                          leading: Icon(Icons.person_pin_circle, color: _showObservations ? Colors.blue.shade700 : Colors.grey),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Switch(
+                                value: _showObservations,
+                                activeTrackColor: Colors.blue.shade700,
+                                onChanged: (val) {
+                                  setState(() {
+                                    _showObservations = val;
+                                    _selectedObservation = null;
+                                  });
+                                },
+                              ),
+                              Icon(
+                                _isObservationsExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                                color: Colors.grey,
+                              ),
+                            ],
                           ),
                           onExpansionChanged: (expanded) {
                             setState(() {
@@ -1258,33 +1581,54 @@ class _MapPageState extends State<MapPage> {
                           },
                           childrenPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                           children: [
-                            SwitchListTile(
-                              title: const Text("Verified Observations", style: TextStyle(fontSize: 12)),
-                              value: _showVerifiedObservations,
-                              activeTrackColor: Colors.blue.shade700,
-                              onChanged: (val) {
-                                  setState(() {
-                                    _showVerifiedObservations = val;
-                                    _selectedObservation = null;
-                                  });
-                                },
-                              contentPadding: EdgeInsets.zero,
-                              dense: true,
+                            const Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text("Filter by Verification:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                             ),
-                            SwitchListTile(
-                              title: const Text("Unverified Observations", style: TextStyle(fontSize: 12)),
-                              value: _showUnverifiedObservations,
-                              activeTrackColor: Colors.orange.shade700,
-                              onChanged: (val) {
-                                  setState(() {
-                                    _showUnverifiedObservations = val;
-                                    _selectedObservation = null;
-                                  });
+                            const SizedBox(height: 4),
+                            DropdownButton<String>(
+                              isExpanded: true,
+                              value: _selectedObservationVerification,
+                              items: _availableVerificationStatuses.map((stat) {
+                                return DropdownMenuItem(
+                                  value: stat,
+                                  child: Text(stat, style: const TextStyle(fontSize: 12)),
+                                );
+                              }).toList(),
+                                onChanged: (val) {
+                                  if (val != null) {
+                                    setState(() {
+                                      _selectedObservationVerification = val;
+                                      _selectedObservation = null;
+                                    });
+                                  }
                                 },
-                              contentPadding: EdgeInsets.zero,
-                              dense: true,
                             ),
-                            const SizedBox(height: 8),
+                            const SizedBox(height: 12),
+                            const Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text("Filter by User Role:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            ),
+                            const SizedBox(height: 4),
+                            DropdownButton<String>(
+                              isExpanded: true,
+                              value: _selectedObservationUserRole,
+                              items: _availableUserRoles.map((role) {
+                                return DropdownMenuItem(
+                                  value: role,
+                                  child: Text(role, style: const TextStyle(fontSize: 12)),
+                                );
+                              }).toList(),
+                                onChanged: (val) {
+                                  if (val != null) {
+                                    setState(() {
+                                      _selectedObservationUserRole = val;
+                                      _selectedObservation = null;
+                                    });
+                                  }
+                                },
+                            ),
+                            const SizedBox(height: 12),
                             const Align(
                               alignment: Alignment.centerLeft,
                               child: Text("Filter by Province:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
@@ -1293,12 +1637,8 @@ class _MapPageState extends State<MapPage> {
                             DropdownButton<String>(
                               isExpanded: true,
                               value: _selectedObservationProvince,
-                              items: _availableProvinces.map((prov) {
-                                return DropdownMenuItem(
-                                  value: prov,
-                                  child: Text(prov, style: const TextStyle(fontSize: 12)),
-                                );
-                              }).toList(),
+                              items: _buildProvinceDropdownItems(),
+                              selectedItemBuilder: _buildProvinceSelectedItems,
                                 onChanged: (val) {
                                   if (val != null) {
                                     setState(() {
@@ -1310,38 +1650,56 @@ class _MapPageState extends State<MapPage> {
                             ),
                           ],
                         ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
                 ),
-              ),
+              ],
             ),
-
-          if (_isCaLoading || _isKrigingLoading || _isPlantationsLoading || _isObservationsLoading)
-            Center(
-              child: Card(
-                elevation: 4,
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const CircularProgressIndicator(color: Colors.green),
-                      const SizedBox(width: 16),
-                      Text((_isCaLoading && _isKrigingLoading)
-                          ? "Fetching simulation layers..."
-                          : _isCaLoading
-                              ? "Fetching CA forecast..."
-                              : _isKrigingLoading
-                                  ? "Fetching Kriging contours..."
-                                  : _isPlantationsLoading 
-                                      ? "Loading plantation points..."
-                                      : "Loading observations..."),
+            ),
+            ),
+          ),
+          ],
+        ),
+          
+          // Right Notch Toggle Button
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeInOut,
+            right: (_isControlsCollapsed ? 0 : 320) - 20,
+            top: MediaQuery.of(context).size.height / 2 - 20,
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: GestureDetector(
+                onTap: () {
+                  setState(() {
+                    _isControlsCollapsed = !_isControlsCollapsed;
+                  });
+                },
+                child: Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: 0.1),
+                        blurRadius: 4,
+                      ),
                     ],
+                    border: Border.all(color: Colors.grey.shade200),
+                  ),
+                  child: Icon(
+                    _isControlsCollapsed ? Icons.chevron_left : Icons.chevron_right,
+                    color: Colors.green[700],
+                    size: 26,
                   ),
                 ),
               ),
             ),
+          ),
         ],
       ),
     );
