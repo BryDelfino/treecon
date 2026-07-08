@@ -75,6 +75,20 @@ class _MapPageState extends State<MapPage> {
   double _currentRotation = 0.0;
   LatLng _mapCenter = const LatLng(12.8797, 121.7740);
 
+  bool _isMapDragging = false;
+  bool _isMapHoveringPolygon = false;
+  final ValueNotifier<MouseCursor> _mapCursorNotifier = ValueNotifier(SystemMouseCursors.grab);
+
+  void _updateMapCursor() {
+    if (_isMapHoveringPolygon) {
+      _mapCursorNotifier.value = SystemMouseCursors.click;
+    } else if (_isMapDragging) {
+      _mapCursorNotifier.value = SystemMouseCursors.grabbing;
+    } else {
+      _mapCursorNotifier.value = SystemMouseCursors.grab;
+    }
+  }
+
   String _getScaleText() {
     final metersPerPixel = 156543.03392 * math.cos(_mapCenter.latitude * math.pi / 180) / math.pow(2, _currentZoom);
     final distanceMeters = 60 * metersPerPixel;
@@ -383,6 +397,16 @@ class _MapPageState extends State<MapPage> {
   void initState() {
     super.initState();
     BrowserContextMenu.disableContextMenu();
+    
+    _hitNotifier.addListener(() {
+      final hitResult = _hitNotifier.value;
+      final isHovering = hitResult != null && hitResult.hitValues.isNotEmpty;
+      if (_isMapHoveringPolygon != isHovering) {
+        _isMapHoveringPolygon = isHovering;
+        _updateMapCursor();
+      }
+    });
+
     _fetchForecast(_caSteps);
     _fetchKriging();
     _fetchPlantations();
@@ -479,12 +503,15 @@ class _MapPageState extends State<MapPage> {
                     Expanded(
                       child: Text(name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14), overflow: TextOverflow.ellipsis),
                     ),
-                    GestureDetector(
-                      onTap: () => setState(() {
-                        _selectedRegionProps = null;
-                        _selectedRegionLocation = null;
-                      }),
-                      child: const Icon(Icons.close, size: 16, color: Colors.grey),
+                    MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: GestureDetector(
+                        onTap: () => setState(() {
+                          _selectedRegionProps = null;
+                          _selectedRegionLocation = null;
+                        }),
+                        child: const Icon(Icons.close, size: 16, color: Colors.grey),
+                      ),
                     ),
                   ],
                 ),
@@ -588,20 +615,23 @@ class _MapPageState extends State<MapPage> {
         point: LatLng(lat, lng),
         width: 20,
         height: 20,
-        child: GestureDetector(
-          onTap: () {
-            setState(() {
-              _selectedPlantation = p;
-            });
-          },
-          child: Container(
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 2),
-              boxShadow: const [
-                BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))
-              ],
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: GestureDetector(
+            onTap: () {
+              setState(() {
+                _selectedPlantation = p;
+              });
+            },
+            child: Container(
+              decoration: BoxDecoration(
+                color: color,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 2),
+                boxShadow: const [
+                  BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))
+                ],
+              ),
             ),
           ),
         ),
@@ -628,9 +658,12 @@ class _MapPageState extends State<MapPage> {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     const Text("Plantation Record", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                    GestureDetector(
-                      onTap: () => setState(() => _selectedPlantation = null),
-                      child: const Icon(Icons.close, size: 16, color: Colors.grey),
+                    MouseRegion(
+                      cursor: SystemMouseCursors.click,
+                      child: GestureDetector(
+                        onTap: () => setState(() => _selectedPlantation = null),
+                        child: const Icon(Icons.close, size: 16, color: Colors.grey),
+                      ),
                     ),
                   ],
                 ),
@@ -709,22 +742,25 @@ class _MapPageState extends State<MapPage> {
         point: LatLng(lat, lng),
         width: 24,
         height: 24,
-        child: GestureDetector(
-          onTap: () {
-            setState(() {
-              _selectedObservation = obs;
-            });
-          },
-          child: Container(
-            decoration: BoxDecoration(
-              color: color,
-              shape: BoxShape.rectangle,
-              borderRadius: isVerified ? BorderRadius.circular(6) : null,
-              border: Border.all(color: Colors.white, width: 2),
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          child: GestureDetector(
+            onTap: () {
+              setState(() {
+                _selectedObservation = obs;
+              });
+            },
+            child: Container(
+              decoration: BoxDecoration(
+                color: color,
+                shape: BoxShape.rectangle,
+                borderRadius: isVerified ? BorderRadius.circular(6) : null,
+                border: Border.all(color: Colors.white, width: 2),
+              ),
+              child: isVerified 
+                ? const Icon(Icons.star, size: 14, color: Colors.white)
+                : const Icon(Icons.warning_amber_rounded, size: 14, color: Colors.white),
             ),
-            child: isVerified 
-              ? const Icon(Icons.star, size: 14, color: Colors.white)
-              : const Icon(Icons.warning_amber_rounded, size: 14, color: Colors.white),
           ),
         ),
       );
@@ -760,9 +796,12 @@ class _MapPageState extends State<MapPage> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       const Text("Field Observation", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                      GestureDetector(
-                        onTap: () => setState(() => _selectedObservation = null),
-                        child: const Icon(Icons.close, size: 16, color: Colors.grey),
+                      MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: GestureDetector(
+                          onTap: () => setState(() => _selectedObservation = null),
+                          child: const Icon(Icons.close, size: 16, color: Colors.grey),
+                        ),
                       ),
                     ],
                   ),
@@ -981,12 +1020,33 @@ class _MapPageState extends State<MapPage> {
           Row(
             children: [
           Expanded(
-            child: Listener(
-              onPointerMove: (event) {
-                if (event.buttons == 2) {
-                  final newRotation = _currentRotation + (event.delta.dx * 0.5);
-                  _mapController.rotate(newRotation);
-                }
+            child: ValueListenableBuilder<MouseCursor>(
+              valueListenable: _mapCursorNotifier,
+              builder: (context, cursor, child) {
+                return MouseRegion(
+                  cursor: cursor,
+                  child: Listener(
+                    onPointerDown: (_) {
+                      _isMapDragging = true;
+                      _updateMapCursor();
+                    },
+                    onPointerUp: (_) {
+                      _isMapDragging = false;
+                      _updateMapCursor();
+                    },
+                    onPointerCancel: (_) {
+                      _isMapDragging = false;
+                      _updateMapCursor();
+                    },
+                    onPointerMove: (event) {
+                      if (event.buttons == 2) {
+                        final newRotation = _currentRotation + (event.delta.dx * 0.5);
+                        _mapController.rotate(newRotation);
+                      }
+                    },
+                    child: child,
+                  ),
+                );
               },
               child: Stack(
                 children: [
@@ -1068,15 +1128,18 @@ class _MapPageState extends State<MapPage> {
                     maxZoom: 15,
                     markers: _buildPlantationMarkers(),
                     builder: (context, markers) {
-                      return Container(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(20),
-                          color: Colors.green.shade700,
-                        ),
-                        child: Center(
-                          child: Text(
-                            markers.length.toString(),
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      return MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(20),
+                            color: Colors.green.shade700,
+                          ),
+                          child: Center(
+                            child: Text(
+                              markers.length.toString(),
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                            ),
                           ),
                         ),
                       );
@@ -1112,17 +1175,20 @@ class _MapPageState extends State<MapPage> {
                     maxZoom: 15,
                     markers: _buildObservationMarkers(),
                     builder: (context, markers) {
-                      return Container(
-                        decoration: BoxDecoration(
-                          shape: BoxShape.rectangle,
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.white, width: 2),
-                          color: Colors.blue.shade700,
-                        ),
-                        child: Center(
-                          child: Text(
-                            markers.length.toString(),
-                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                      return MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            shape: BoxShape.rectangle,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.white, width: 2),
+                            color: Colors.blue.shade700,
+                          ),
+                          child: Center(
+                            child: Text(
+                              markers.length.toString(),
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                            ),
                           ),
                         ),
                       );
