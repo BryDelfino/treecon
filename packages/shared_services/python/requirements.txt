@@ -7,3 +7,5 @@ shapely
 geojson
 matplotlib
 pykrige
+python-multipart
+requests
