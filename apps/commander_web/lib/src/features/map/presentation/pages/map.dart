@@ -8,6 +8,8 @@ import 'package:flutter_map_marker_cluster/flutter_map_marker_cluster.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 class MapPage extends StatefulWidget {
   const MapPage({super.key});
@@ -38,6 +40,10 @@ class _MapPageState extends State<MapPage> {
   // Observations state
   String _selectedObservationVerification = 'All';
   String _selectedObservationUserRole = 'All';
+  String _selectedObservationProvince = 'All';
+  DateTime? _observationStartDate;
+  DateTime? _observationEndDate;
+  bool _showMyObservationsOnly = false;
 
   final List<String> _availableVerificationStatuses = ['All', 'Verified', 'Unverified'];
   final List<String> _availableUserRoles = ['All', 'Expert', 'Community'];
@@ -47,7 +53,6 @@ class _MapPageState extends State<MapPage> {
   bool _isControlsCollapsed = false;
   List<Map<String, dynamic>> _observationsData = [];
   Map<String, dynamic>? _selectedObservation;
-  String _selectedObservationProvince = 'All';
   
   // Plantations state
   bool _showPlantations = false;
@@ -75,6 +80,52 @@ class _MapPageState extends State<MapPage> {
   double _currentRotation = 0.0;
   LatLng _mapCenter = const LatLng(12.8797, 121.7740);
 
+  // Datasets state
+  bool _isDatasetsLoading = false;
+  bool _isUploadingDataset = false;
+  List<Map<String, dynamic>> _availableDatasets = [];
+  Map<String, dynamic>? _selectedDataset;
+  String _datasetUserRoleFilter = 'All';
+  DateTime? _datasetStartDate;
+  DateTime? _datasetEndDate;
+  bool _showMyDatasetsOnly = false;
+  String _datasetVisibilityFilter = 'All';
+
+  List<Map<String, dynamic>> get _filteredDatasets {
+    return _availableDatasets.where((ds) {
+      if (_showMyDatasetsOnly) {
+        final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+        if (currentUserId != null && ds['user_id'] != currentUserId) {
+          return false;
+        }
+      }
+
+      if (_datasetUserRoleFilter != 'All') {
+        final role = ds['users'] != null && ds['users'] is Map
+            ? (ds['users'] as Map)['role']?.toString().toUpperCase()
+            : null;
+        if (_datasetUserRoleFilter == 'Expert' && role != 'EXPERT') return false;
+        if (_datasetUserRoleFilter == 'Community' && role == 'EXPERT') return false;
+      }
+      if (_datasetVisibilityFilter != 'All') {
+        final isPublic = ds['is_public'] == true;
+        if (_datasetVisibilityFilter == 'Public' && !isPublic) return false;
+        if (_datasetVisibilityFilter == 'Private' && isPublic) return false;
+      }
+      if (_datasetStartDate != null || _datasetEndDate != null) {
+        final dateStr = ds['created_at'] as String?;
+        if (dateStr != null) {
+          final date = DateTime.tryParse(dateStr);
+          if (date != null) {
+            if (_datasetStartDate != null && date.isBefore(_datasetStartDate!)) return false;
+            if (_datasetEndDate != null && date.isAfter(_datasetEndDate!.add(const Duration(days: 1)))) return false;
+          }
+        }
+      }
+      return true;
+    }).toList();
+  }
+
   bool _isMapDragging = false;
   bool _isMapHoveringPolygon = false;
   final ValueNotifier<MouseCursor> _mapCursorNotifier = ValueNotifier(SystemMouseCursors.grab);
@@ -87,6 +138,55 @@ class _MapPageState extends State<MapPage> {
     } else {
       _mapCursorNotifier.value = SystemMouseCursors.grab;
     }
+  }
+
+  void _showToast(String message, {bool isError = true}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).clearSnackBars();
+    
+    final screenWidth = MediaQuery.of(context).size.width;
+    final leftMargin = screenWidth > 400 ? screenWidth - 360.0 : 16.0;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              isError ? Icons.error_outline_rounded : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 20,
+            ),
+            const SizedBox(width: 12.0),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(fontWeight: FontWeight.w500, color: Colors.white),
+              ),
+            ),
+            const SizedBox(width: 8.0),
+            IconButton(
+              icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 18),
+              onPressed: () {
+                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+              },
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+              splashRadius: 16.0,
+            ),
+          ],
+        ),
+        backgroundColor: isError ? Colors.red[800] : Colors.green[800],
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10.0),
+        ),
+        margin: EdgeInsets.only(
+          bottom: 16.0,
+          right: 16.0,
+          left: leftMargin,
+        ),
+      ),
+    );
   }
 
   String _getScaleText() {
@@ -133,7 +233,7 @@ class _MapPageState extends State<MapPage> {
 
   List<String> get _availableProvinces {
     final Set<String> provinces = {'All'};
-    for (var poly in _caPolygons) {
+    for (var poly in _philippinesPolygons) {
       final props = poly.hitValue as Map<String, dynamic>?;
       if (props != null) {
         final name = props['adm2_name'] as String?;
@@ -227,10 +327,10 @@ class _MapPageState extends State<MapPage> {
   }
 
   String _getProvinceForObservation(LatLng point) {
-    for (var poly in _caPolygons) {
+    for (var poly in _philippinesPolygons) {
       if (_isPointInPolygon(point, poly.points)) {
         final props = poly.hitValue as Map<String, dynamic>?;
-        if (props != null && props['adm2_name'] != null) {
+        if (props != null && props['adm2_name'] != null && props['adm2_name'] != 'Special Geographic Area') {
           return props['adm2_name'];
         }
       }
@@ -393,6 +493,52 @@ class _MapPageState extends State<MapPage> {
 
 
 
+  List<Polygon> _philippinesPolygons = [];
+
+  Future<void> _loadPhilippinesGeoJSON() async {
+    try {
+      final String jsonString = await rootBundle.loadString('assets/philippines.json');
+      final Map<String, dynamic> geojson = json.decode(jsonString) as Map<String, dynamic>;
+      final features = geojson['features'] as List<dynamic>;
+      final List<Polygon> polys = [];
+      for (var f in features) {
+        final feature = f as Map<String, dynamic>;
+        if (feature['geometry'] == null) continue;
+        final geom = feature['geometry'] as Map<String, dynamic>;
+        final type = geom['type'] as String;
+        final coords = geom['coordinates'] as List<dynamic>;
+        final props = feature['properties'] as Map<String, dynamic>?;
+        if (props?['adm2_name'] == 'Special Geographic Area') continue;
+
+        if (type == 'Polygon') {
+          final List<LatLng> points = [];
+          final ring = coords[0] as List<dynamic>;
+          for (var pt in ring) {
+            final point = pt as List<dynamic>;
+            points.add(LatLng((point[1] as num).toDouble(), (point[0] as num).toDouble()));
+          }
+          polys.add(Polygon(points: points, color: Colors.transparent, borderStrokeWidth: 0, hitValue: props));
+        } else if (type == 'MultiPolygon') {
+          for (var poly in coords) {
+            final polygon = poly as List<dynamic>;
+            final List<LatLng> points = [];
+            final ring = polygon[0] as List<dynamic>;
+            for (var pt in ring) {
+              final point = pt as List<dynamic>;
+              points.add(LatLng((point[1] as num).toDouble(), (point[0] as num).toDouble()));
+            }
+            polys.add(Polygon(points: points, color: Colors.transparent, borderStrokeWidth: 0, hitValue: props));
+          }
+        }
+      }
+      setState(() {
+        _philippinesPolygons = polys;
+      });
+    } catch (e) {
+      debugPrint("Error loading philippines.json: $e");
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -407,10 +553,276 @@ class _MapPageState extends State<MapPage> {
       }
     });
 
-    _fetchForecast(_caSteps);
-    _fetchKriging();
-    _fetchPlantations();
+    _loadPhilippinesGeoJSON();
     _fetchObservations();
+    _fetchDatasets();
+  }
+
+  Future<void> _fetchDatasets() async {
+    setState(() => _isDatasetsLoading = true);
+    try {
+      final user = Supabase.instance.client.auth.currentUser;
+      if (user == null) return;
+      
+      final response = await Supabase.instance.client
+          .from('datasets')
+          .select('*')
+          .or('is_public.eq.true,user_id.eq.${user.id}')
+          .order('created_at', ascending: false);
+
+      final datasets = List<Map<String, dynamic>>.from(response)
+          .where((ds) => ds['is_deleted'] != true)
+          .toList();
+
+      // Fetch user profiles separately (no FK from datasets → public.users)
+      final userIds = datasets.map((ds) => ds['user_id']).whereType<String>().toSet().toList();
+      if (userIds.isNotEmpty) {
+        final usersResponse = await Supabase.instance.client
+            .from('users')
+            .select('user_id, user_name, role, avatar_url')
+            .inFilter('user_id', userIds);
+
+        final usersMap = <String, Map<String, dynamic>>{};
+        for (var u in usersResponse) {
+          usersMap[u['user_id'] as String] = u;
+        }
+
+        for (var ds in datasets) {
+          final uid = ds['user_id'] as String?;
+          if (uid != null && usersMap.containsKey(uid)) {
+            ds['users'] = usersMap[uid];
+          }
+        }
+      }
+          
+      setState(() {
+        _availableDatasets = datasets;
+        _isDatasetsLoading = false;
+      });
+    } catch (e) {
+      debugPrint("Error fetching datasets: $e");
+      setState(() => _isDatasetsLoading = false);
+    }
+  }
+
+  Future<void> _uploadDataset() async {
+    try {
+      FilePickerResult? result = await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['csv'],
+        withData: true,
+      );
+
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.first;
+      if (file.bytes == null) {
+        _showToast('Could not read file.');
+        return;
+      }
+      
+      if (file.size > 5 * 1024 * 1024) {
+        _showToast('File exceeds 5MB limit.');
+        return;
+      }
+
+      final firstLine = utf8.decode(file.bytes!.take(2048).toList(), allowMalformed: true).toLowerCase().split('\n').first;
+      if (!firstLine.contains('latitude') || !firstLine.contains('longitude')) {
+        _showToast('Invalid CSV: Missing latitude or longitude columns.');
+        return;
+      }
+
+      setState(() => _isUploadingDataset = true);
+
+      bool isPublic = false;
+      String displayName = file.name;
+      final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+
+      if (mounted) {
+        final dialogResult = await showDialog<Map<String, dynamic>>(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) {
+            bool tempIsPublic = false;
+            final textController = TextEditingController(text: file.name);
+            bool hasDuplicateError = _availableDatasets.any((ds) => ds['filename'] == file.name && ds['user_id'] == currentUserId);
+
+            return StatefulBuilder(
+              builder: (context, setStateDialog) {
+                return AlertDialog(
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                  title: Row(
+                    children: [
+                      Icon(Icons.cloud_upload, color: Colors.green.shade700),
+                      const SizedBox(width: 8),
+                      const Text('Upload Dataset'),
+                    ],
+                  ),
+                  content: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('Display Name', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: textController,
+                        decoration: InputDecoration(
+                          hintText: 'Enter dataset name',
+                          border: const OutlineInputBorder(),
+                          errorText: hasDuplicateError ? 'You have already uploaded a dataset with this name.' : null,
+                          isDense: true,
+                        ),
+                        onChanged: (val) {
+                          setStateDialog(() {
+                            hasDuplicateError = _availableDatasets.any((ds) => ds['filename'] == val.trim() && ds['user_id'] == currentUserId);
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      const Text('Do you want to make this dataset public? Note: The perturbed version of your data will be the one publicly available to other users.', style: TextStyle(fontSize: 13)),
+                      const SizedBox(height: 12),
+                      Container(
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade100,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.grey.shade300)
+                        ),
+                        child: SwitchListTile(
+                          title: const Text('Make Public', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                          value: tempIsPublic,
+                          activeTrackColor: Colors.green.shade200,
+                          activeThumbColor: Colors.green.shade700,
+                          onChanged: (val) => setStateDialog(() => tempIsPublic = val),
+                        ),
+                      ),
+                    ],
+                  ),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('Cancel')),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade700, foregroundColor: Colors.white),
+                      onPressed: hasDuplicateError || textController.text.trim().isEmpty 
+                          ? null 
+                          : () => Navigator.pop(context, {'isPublic': tempIsPublic, 'displayName': textController.text.trim()}),
+                      child: const Text('Upload'),
+                    ),
+                  ],
+                );
+              },
+            );
+          },
+        );
+        if (dialogResult == null) {
+          setState(() => _isUploadingDataset = false);
+          return;
+        }
+        isPublic = dialogResult['isPublic'] as bool;
+        displayName = dialogResult['displayName'] as String;
+      }
+
+      final request = http.MultipartRequest(
+        'POST',
+        Uri.parse('http://127.0.0.1:8000/api/datasets/process'),
+      );
+      request.files.add(http.MultipartFile.fromBytes(
+        'file',
+        file.bytes!,
+        filename: file.name,
+      ));
+
+      final response = await request.send();
+      final responseBody = await response.stream.bytesToString();
+      
+      if (response.statusCode != 200) {
+        final decoded = json.decode(responseBody) as Map<String, dynamic>;
+        final error = decoded['detail'] ?? 'Unknown error';
+        _showToast('Validation failed: $error');
+        setState(() => _isUploadingDataset = false);
+        return;
+      }
+
+      final processedData = json.decode(responseBody) as Map<String, dynamic>;
+      final rawCsvString = processedData['raw_csv'] as String;
+      final perturbedCsvString = processedData['perturbed_csv'] as String;
+
+      final user = Supabase.instance.client.auth.currentUser;
+      if (user == null) {
+        setState(() => _isUploadingDataset = false);
+        return;
+      }
+
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final safeName = displayName.replaceAll(' ', '_');
+      final rawPath = '${user.id}/${timestamp}_raw_$safeName';
+      final perturbedPath = '${user.id}/${timestamp}_perturbed_$safeName';
+
+      await Supabase.instance.client.storage.from('datasets').uploadBinary(
+        rawPath,
+        Uint8List.fromList(utf8.encode(rawCsvString)),
+        fileOptions: const FileOptions(contentType: 'text/csv'),
+      );
+      
+      await Supabase.instance.client.storage.from('datasets').uploadBinary(
+        perturbedPath,
+        Uint8List.fromList(utf8.encode(perturbedCsvString)),
+        fileOptions: const FileOptions(contentType: 'text/csv'),
+      );
+
+      final insertedRows = await Supabase.instance.client.from('datasets').insert({
+        'user_id': user.id,
+        'filename': displayName,
+        'raw_filepath': rawPath,
+        'perturbed_filepath': perturbedPath,
+        'is_public': isPublic,
+      }).select('*');
+
+      // Attach user profile to the newly inserted row
+      if (insertedRows.isNotEmpty) {
+        final userProfile = await Supabase.instance.client
+            .from('users')
+            .select('user_id, user_name, role, avatar_url')
+            .eq('user_id', user.id)
+            .maybeSingle();
+        if (userProfile != null) {
+          insertedRows.first['users'] = userProfile;
+        }
+      }
+
+      if (mounted) {
+        _showToast('Dataset uploaded successfully!', isError: false);
+      }
+
+      await _fetchDatasets();
+      
+      if (insertedRows.isNotEmpty) {
+        final newDataset = insertedRows.first;
+        setState(() {
+          _selectedDataset = newDataset;
+          _showCA = true;
+          _showKriging = false;
+          _showPlantations = true;
+          _caPolygons.clear();
+          _krigingPolygons.clear();
+          _plantationsData.clear();
+          // Ensure it's in the list if _fetchDatasets missed it due to replication lag
+          if (!_availableDatasets.any((d) => d['id'] == newDataset['id'])) {
+            _availableDatasets.insert(0, newDataset);
+          }
+        });
+        final isOwner = newDataset['user_id'] == Supabase.instance.client.auth.currentUser?.id;
+        final path = isOwner ? newDataset['raw_filepath'] : newDataset['perturbed_filepath'];
+        final url = Supabase.instance.client.storage.from('datasets').getPublicUrl(path);
+        _fetchForecast(_caSteps, url);
+        _fetchKriging(url);
+        _fetchPlantations(url);
+      }
+      
+    } catch (e) {
+      debugPrint('Upload error: $e');
+      _showToast('Error uploading: $e');
+    } finally {
+      if (mounted) setState(() => _isUploadingDataset = false);
+    }
   }
 
   @override
@@ -428,14 +840,14 @@ class _MapPageState extends State<MapPage> {
 
       final response = await Supabase.instance.client
           .from('observations')
-          .select('*, users!observations_user_id_fkey(user_name, role)')
+          .select('*, users!observations_user_id_fkey(user_name, role, avatar_url)')
           .order('observation_timestamp', ascending: false);
 
       debugPrint('[OBS] Raw response type: ${response.runtimeType}');
       debugPrint('[OBS] Rows fetched: ${response.length}');
 
       if (response.isNotEmpty) {
-        final first = response.first as Map<String, dynamic>;
+        final first = response.first;
         debugPrint('[OBS] First row keys: ${first.keys.toList()}');
         debugPrint('[OBS] First row coordinates: ${first['coordinates']}');
         debugPrint('[OBS] First row coordinates type: ${first['coordinates'].runtimeType}');
@@ -551,13 +963,13 @@ class _MapPageState extends State<MapPage> {
   }
 
   // Fetches Plantation Points from Python server
-  Future<void> _fetchPlantations() async {
+  Future<void> _fetchPlantations(String datasetUrl) async {
     setState(() {
       _isPlantationsLoading = true;
     });
     try {
       final response = await http.get(
-        Uri.parse('http://127.0.0.1:8000/api/plantations'),
+        Uri.parse('http://127.0.0.1:8000/api/plantations?dataset_url=${Uri.encodeComponent(datasetUrl)}'),
       );
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body);
@@ -581,7 +993,7 @@ class _MapPageState extends State<MapPage> {
       final lat = double.tryParse(p['latitude'].toString()) ?? 0.0;
       final lng = double.tryParse(p['longitude'].toString()) ?? 0.0;
       
-      final groundTruthSeverity = double.tryParse(p['severity_index_pct'].toString()) ?? 0.0;
+      final groundTruthSeverity = double.tryParse((p['GSI'] ?? p['severity_index_pct'] ?? 0.0).toString()) ?? 0.0;
       final forecastedSeverity = _getCAForecastForPoint(LatLng(lat, lng));
       final severity = forecastedSeverity ?? groundTruthSeverity;
       
@@ -594,7 +1006,7 @@ class _MapPageState extends State<MapPage> {
       final lat = double.tryParse(p['latitude'].toString()) ?? 0.0;
       final lng = double.tryParse(p['longitude'].toString()) ?? 0.0;
       
-      final groundTruthSeverity = double.tryParse(p['severity_index_pct'].toString()) ?? 0.0;
+      final groundTruthSeverity = double.tryParse((p['GSI'] ?? p['severity_index_pct'] ?? 0.0).toString()) ?? 0.0;
       final forecastedSeverity = _getCAForecastForPoint(LatLng(lat, lng));
       final severity = forecastedSeverity ?? groundTruthSeverity;
       
@@ -640,6 +1052,24 @@ class _MapPageState extends State<MapPage> {
   }
 
   Widget _buildPlantationInfoWindow(Map<String, dynamic> p) {
+    final isOwner = _selectedDataset != null && _selectedDataset!['user_id'] == Supabase.instance.client.auth.currentUser?.id;
+
+    String getValue(List<String> keys) {
+      for (final k in p.keys) {
+        final norm = k.toLowerCase().replaceAll('_', '').replaceAll(' ', '');
+        for (final target in keys) {
+          if (norm == target.toLowerCase().replaceAll('_', '').replaceAll(' ', '')) {
+            final v = p[k];
+            if (v != null && v.toString().trim().isNotEmpty) return v.toString();
+          }
+        }
+      }
+      return 'N/A';
+    }
+
+    final recordIdStr = getValue(['recordid', 'record', 'id']);
+    final popupTitle = (isOwner && recordIdStr != 'N/A') ? "Record $recordIdStr" : "Plantation Record";
+
     return Stack(
       clipBehavior: Clip.none,
       children: [
@@ -657,7 +1087,7 @@ class _MapPageState extends State<MapPage> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text("Plantation Record", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                    Text(popupTitle, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                     MouseRegion(
                       cursor: SystemMouseCursors.click,
                       child: GestureDetector(
@@ -667,29 +1097,63 @@ class _MapPageState extends State<MapPage> {
                     ),
                   ],
                 ),
-                const Divider(),
-                Text("Record ID: ${p['record_id']}", style: const TextStyle(fontSize: 12)),
-                Text("Plantation ID: ${p['plantation_id']}", style: const TextStyle(fontSize: 12)),
-                Text("Plot Number: ${p['plot_number']}", style: const TextStyle(fontSize: 12)),
-                Text("Region: ${p['region']}", style: const TextStyle(fontSize: 12)),
-                Text("Lat/Lng: ${p['latitude']}, ${p['longitude']}", style: const TextStyle(fontSize: 12)),
+                Builder(
+                  builder: (context) {
+                    Color getColor(double val) {
+                      if (val < 10) return Colors.green.shade700;
+                      if (val < 25) return Colors.yellow.shade800;
+                      if (val < 50) return Colors.orange;
+                      if (val < 75) return Colors.deepOrange;
+                      return Colors.red;
+                    }
+
+                    final gsiStr = getValue(['gsi', 'severity_index_pct', 'GSI']);
+                    final gsiVal = double.tryParse(gsiStr) ?? 0.0;
+                    final isGsiValid = gsiStr != 'N/A';
+
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Divider(),
+                        if (isOwner) ...[
+                          Text("Lat/Lng: ${getValue(['latitude', 'lat'])}, ${getValue(['longitude', 'lng'])}", style: const TextStyle(fontSize: 12)),
+                          const SizedBox(height: 4),
+                        ],
+                        Text("Region: ${getValue(['region', 'region_number'])}", style: const TextStyle(fontSize: 12)),
+                        Text("Plantation: ${getValue(['plantation', 'plantation_id', 'plantation_number'])}", style: const TextStyle(fontSize: 12)),
+                        Text("Plot Number: ${getValue(['plot', 'plot_number', 'plotnumber'])}", style: const TextStyle(fontSize: 12)),
+                        Text("GRI: ${getValue(['gri', 'GRI'])}", style: const TextStyle(fontSize: 12)),
+                        Text("GSI: ${isGsiValid ? '$gsiStr% (${_getSeverityClass(gsiVal)})' : 'N/A'}", 
+                          style: TextStyle(
+                            fontSize: 12, 
+                            fontWeight: isGsiValid ? FontWeight.bold : FontWeight.normal,
+                            color: isGsiValid ? getColor(gsiVal) : Colors.black87
+                          )
+                        ),
+                      ],
+                    );
+                  }
+                ),
                 const SizedBox(height: 8),
                 if (_showCA) ...[
-                  const Text("Ground Truth", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey)),
-                  Text("Before (Current): ${p['severity_index_pct']}% (${_getSeverityClass(double.tryParse(p['severity_index_pct'].toString()) ?? 0.0)})", style: const TextStyle(fontSize: 12)),
-                  const SizedBox(height: 4),
+                  const Divider(),
                   const Text("CA Spread Forecast", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey)),
                   Builder(builder: (context) {
                     final lat = double.tryParse(p['latitude'].toString()) ?? 0.0;
                     final lng = double.tryParse(p['longitude'].toString()) ?? 0.0;
                     final forecasted = _getCAForecastForPoint(LatLng(lat, lng));
                     if (forecasted != null) {
-                      return Text('After (Step $_caSteps): $forecasted% (${_getSeverityClass(forecasted)})', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: Colors.deepOrange));
+                      Color getColor(double val) {
+                        if (val < 10) return Colors.green.shade700;
+                        if (val < 25) return Colors.yellow.shade800;
+                        if (val < 50) return Colors.orange;
+                        if (val < 75) return Colors.deepOrange;
+                        return Colors.red;
+                      }
+                      return Text('Forecasted GSI (Step $_caSteps): $forecasted% (${_getSeverityClass(forecasted)})', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: getColor(forecasted)));
                     }
                     return const Text("No forecast available for this point.", style: TextStyle(fontSize: 12, color: Colors.grey));
                   }),
-                ] else ...[
-                  Text("Severity: ${p['severity_index_pct']}% (${_getSeverityClass(double.tryParse(p['severity_index_pct'].toString()) ?? 0.0)})", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.deepOrange)),
                 ],
               ],
             ),
@@ -714,6 +1178,20 @@ class _MapPageState extends State<MapPage> {
       final isExpert = role == 'EXPERT';
       if (_selectedObservationUserRole == 'Expert' && !isExpert) return false;
       if (_selectedObservationUserRole == 'Community' && isExpert) return false;
+
+      if (_showMyObservationsOnly && obs['user_id'] != Supabase.instance.client.auth.currentUser?.id) return false;
+
+      if (_observationStartDate != null || _observationEndDate != null) {
+        final obsDateStr = obs['observation_timestamp'] as String?;
+        if (obsDateStr != null) {
+          final obsDate = DateTime.tryParse(obsDateStr);
+          if (obsDate != null) {
+            if (_observationStartDate != null && obsDate.isBefore(_observationStartDate!)) return false;
+            // Add 1 day to end date to make it inclusive of the selected day
+            if (_observationEndDate != null && obsDate.isAfter(_observationEndDate!.add(const Duration(days: 1)))) return false;
+          }
+        }
+      }
 
       return _isObservationInProvince(obs, _selectedObservationProvince);
     }).toList();
@@ -771,6 +1249,7 @@ class _MapPageState extends State<MapPage> {
     final coords = _parseCoordinates(obs['coordinates']);
     final lat = coords?['lat'] ?? 0.0;
     final lng = coords?['lng'] ?? 0.0;
+    final isOwner = obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
     final province = _getProvinceForObservation(LatLng(lat, lng));
     final isVerified = obs['is_verified'] == true || obs['sync_status'] == 'verified';
     final date = obs['observation_timestamp'] != null 
@@ -832,10 +1311,16 @@ class _MapPageState extends State<MapPage> {
                           ? (obs['users'] as Map)['role']?.toString().toUpperCase()
                           : null;
                       final isExpert = role == 'EXPERT';
+                      final avatarUrl = obs['users'] != null && obs['users'] is Map
+                          ? (obs['users'] as Map)['avatar_url']?.toString()
+                          : null;
                       return Row(
                         crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
-                          const Icon(Icons.person, size: 14, color: Colors.grey),
+                          if (avatarUrl != null && avatarUrl.isNotEmpty)
+                            CircleAvatar(radius: 8, backgroundImage: NetworkImage(avatarUrl))
+                          else
+                            const Icon(Icons.person, size: 14, color: Colors.grey),
                           const SizedBox(width: 4),
                           Text(contributorName, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                           if (isExpert) ...[
@@ -853,7 +1338,8 @@ class _MapPageState extends State<MapPage> {
                   const SizedBox(height: 4),
                   Text("Date: $date", style: const TextStyle(fontSize: 12)),
                   Text("Province: $province", style: const TextStyle(fontSize: 12)),
-                  Text("Lat/Lng: ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}", style: const TextStyle(fontSize: 12)),
+                  if (isOwner)
+                    Text("Lat/Lng: ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}", style: const TextStyle(fontSize: 12)),
                   const SizedBox(height: 8),
                   const Text("Confidence Score", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey)),
                   Text("${obs['confidence_score'] ?? 'N/A'}%", style: const TextStyle(fontSize: 12)),
@@ -870,7 +1356,7 @@ class _MapPageState extends State<MapPage> {
   }
 
   // Fetches Kriging Contours from Python server
-  Future<void> _fetchKriging() async {
+  Future<void> _fetchKriging(String datasetUrl) async {
     setState(() {
       _isKrigingLoading = true;
     });
@@ -878,6 +1364,9 @@ class _MapPageState extends State<MapPage> {
       final response = await http.post(
         Uri.parse('http://127.0.0.1:8000/api/kriging'),
         headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'dataset_url': datasetUrl,
+        }),
       );
       if (response.statusCode == 200) {
         final polygons = _parseGeoJSON(response.body);
@@ -897,7 +1386,7 @@ class _MapPageState extends State<MapPage> {
   }
 
   // Fetches Cellular Automata spread forecast from Python server
-  Future<void> _fetchForecast(int steps) async {
+  Future<void> _fetchForecast(int steps, String datasetUrl) async {
     setState(() {
       _isCaLoading = true;
     });
@@ -906,6 +1395,7 @@ class _MapPageState extends State<MapPage> {
         Uri.parse('http://127.0.0.1:8000/api/forecast'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
+          'dataset_url': datasetUrl,
           'steps': steps,
           'grid_resolution': 0.12,
           'spread_factor': 0.08,
@@ -1396,6 +1886,236 @@ class _MapPageState extends State<MapPage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
+                          // Dataset Manager
+                          Container(
+                            padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 8.0),
+                            margin: const EdgeInsets.only(bottom: 12.0),
+                            decoration: BoxDecoration(
+                              color: Colors.green.shade50,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: Colors.green.shade200),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text("Spatial Dataset", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.green.shade800)),
+                                    if (_isDatasetsLoading) const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
+                                  ],
+                                ),
+                                const SizedBox(height: 8),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                                        decoration: BoxDecoration(
+                                          border: Border.all(color: Colors.grey),
+                                          borderRadius: BorderRadius.circular(4),
+                                          color: Colors.white,
+                                        ),
+                                        child: DropdownButton<String>(
+                                          isExpanded: true,
+                                          underline: const SizedBox(),
+                                          value: _datasetUserRoleFilter,
+                                          items: _availableUserRoles.map((r) => DropdownMenuItem(value: r, child: Text(r, style: const TextStyle(fontSize: 11)))).toList(),
+                                          onChanged: (val) {
+                                            if (val != null) setState(() => _datasetUserRoleFilter = val);
+                                          },
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Expanded(
+                                      child: Container(
+                                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                                        decoration: BoxDecoration(
+                                          border: Border.all(color: Colors.grey),
+                                          borderRadius: BorderRadius.circular(4),
+                                          color: Colors.white,
+                                        ),
+                                        child: DropdownButton<String>(
+                                          isExpanded: true,
+                                          underline: const SizedBox(),
+                                          value: _datasetVisibilityFilter,
+                                          items: ['All', 'Public', 'Private'].map((v) => DropdownMenuItem(value: v, child: Text(v, style: const TextStyle(fontSize: 11)))).toList(),
+                                          onChanged: (val) {
+                                            if (val != null) setState(() => _datasetVisibilityFilter = val);
+                                          },
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Expanded(
+                                      child: OutlinedButton(
+                                        style: OutlinedButton.styleFrom(
+                                          padding: const EdgeInsets.symmetric(horizontal: 4), 
+                                          backgroundColor: Colors.white,
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                                        ),
+                                        onPressed: () async {
+                                          final date = await showDatePicker(
+                                            context: context,
+                                            initialDate: _datasetStartDate ?? DateTime.now(),
+                                            firstDate: DateTime(2000),
+                                            lastDate: DateTime.now(),
+                                          );
+                                          if (date != null) setState(() => _datasetStartDate = date);
+                                        },
+                                        child: Text(_datasetStartDate != null ? _datasetStartDate!.toString().split(' ')[0] : 'Start', style: const TextStyle(fontSize: 11)),
+                                      ),
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Expanded(
+                                      child: OutlinedButton(
+                                        style: OutlinedButton.styleFrom(
+                                          padding: const EdgeInsets.symmetric(horizontal: 4), 
+                                          backgroundColor: Colors.white,
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                                        ),
+                                        onPressed: () async {
+                                          final date = await showDatePicker(
+                                            context: context,
+                                            initialDate: _datasetEndDate ?? DateTime.now(),
+                                            firstDate: DateTime(2000),
+                                            lastDate: DateTime.now(),
+                                          );
+                                          if (date != null) setState(() => _datasetEndDate = date);
+                                        },
+                                        child: Text(_datasetEndDate != null ? _datasetEndDate!.toString().split(' ')[0] : 'End', style: const TextStyle(fontSize: 11)),
+                                      ),
+                                    ),
+                                    if (_datasetStartDate != null || _datasetEndDate != null) ...[
+                                      const SizedBox(width: 4),
+                                      IconButton(
+                                        icon: const Icon(Icons.clear, size: 14),
+                                        onPressed: () => setState(() { _datasetStartDate = null; _datasetEndDate = null; }),
+                                        padding: EdgeInsets.zero,
+                                        constraints: const BoxConstraints(),
+                                      ),
+                                    ],
+                                  ],
+                                ),
+                                const SizedBox(height: 12),
+                                SwitchListTile(
+                                  contentPadding: EdgeInsets.zero,
+                                  title: const Text("My Datasets Only", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                                  value: _showMyDatasetsOnly,
+                                  activeTrackColor: Colors.green.shade200,
+                                  activeThumbColor: Colors.green.shade700,
+                                  onChanged: (val) {
+                                    setState(() {
+                                      _showMyDatasetsOnly = val;
+                                      _selectedDataset = null;
+                                      _showCA = false;
+                                      _showKriging = false;
+                                      _showPlantations = false;
+                                      _caPolygons.clear();
+                                      _krigingPolygons.clear();
+                                      _plantationsData.clear();
+                                    });
+                                  },
+                                ),
+                                const SizedBox(height: 8),
+                                Container(
+                                  height: 200,
+                                  decoration: BoxDecoration(
+                                    border: Border.all(color: Colors.grey.shade400),
+                                    borderRadius: BorderRadius.circular(8),
+                                    color: Colors.white,
+                                  ),
+                                  child: _filteredDatasets.isEmpty 
+                                    ? const Center(child: Text("No datasets found", style: TextStyle(color: Colors.grey, fontSize: 12)))
+                                    : ListView.builder(
+                                        itemCount: _filteredDatasets.length,
+                                        itemBuilder: (context, index) {
+                                          final dataset = _filteredDatasets[index];
+                                          final isSelected = _selectedDataset != null && _selectedDataset!['id'] == dataset['id'];
+                                          final isOwner = dataset['user_id'] == Supabase.instance.client.auth.currentUser?.id;
+                                          final uploaderName = dataset['users'] != null && dataset['users'] is Map
+                                              ? (dataset['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
+                                              : 'Unknown User';
+                                          final dateStr = dataset['created_at'] != null ? DateTime.tryParse(dataset['created_at'].toString())?.toString().split(' ')[0] ?? '' : '';
+                                          
+                                          return Card(
+                                            margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                            color: isSelected ? Colors.green.shade100 : Colors.white,
+                                            elevation: isSelected ? 2 : 0,
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius: BorderRadius.circular(6),
+                                              side: BorderSide(color: isSelected ? Colors.green.shade600 : Colors.grey.shade200),
+                                            ),
+                                            child: ListTile(
+                                              dense: true,
+                                              contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+                                              title: Text(dataset['filename'] ?? 'Dataset', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis),
+                                              subtitle: Text('By: $uploaderName • $dateStr', style: const TextStyle(fontSize: 10)),
+                                              trailing: isOwner ? const Icon(Icons.star, size: 14, color: Colors.orange) : const Icon(Icons.public, size: 14, color: Colors.grey),
+                                              onTap: () {
+                                                setState(() {
+                                                  _selectedDataset = dataset;
+                                                  _showCA = false;
+                                                  _showKriging = false;
+                                                  _showPlantations = false;
+                                                  _caPolygons.clear();
+                                                  _krigingPolygons.clear();
+                                                  _plantationsData.clear();
+                                                });
+                                                final path = isOwner ? dataset['raw_filepath'] : dataset['perturbed_filepath'];
+                                                final url = Supabase.instance.client.storage.from('datasets').getPublicUrl(path);
+                                                _fetchForecast(_caSteps, url);
+                                                _fetchKriging(url);
+                                                _fetchPlantations(url);
+                                              },
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                ),
+                                const SizedBox(height: 8),
+                                Row(
+                                  children: [
+                                    Expanded(
+                                      child: ElevatedButton.icon(
+                                        icon: _isUploadingDataset ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) : const Icon(Icons.upload_file, size: 16),
+                                        label: const Text('Upload CSV', style: TextStyle(fontSize: 12)),
+                                        style: ElevatedButton.styleFrom(
+                                          padding: const EdgeInsets.symmetric(vertical: 8),
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                                        ),
+                                        onPressed: _isUploadingDataset ? null : _uploadDataset,
+                                      ),
+                                    ),
+                                    if (_selectedDataset != null && _selectedDataset!['user_id'] == Supabase.instance.client.auth.currentUser?.id) ...[
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: OutlinedButton.icon(
+                                          icon: const Icon(Icons.download, size: 16),
+                                          label: const Text('Download', style: TextStyle(fontSize: 12)),
+                                          style: OutlinedButton.styleFrom(
+                                            padding: const EdgeInsets.symmetric(vertical: 8),
+                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
+                                          ),
+                                          onPressed: () {
+                                            final isOwner = _selectedDataset!['user_id'] == Supabase.instance.client.auth.currentUser?.id;
+                                            final path = isOwner ? _selectedDataset!['raw_filepath'] : _selectedDataset!['perturbed_filepath'];
+                                            final url = Supabase.instance.client.storage.from('datasets').getPublicUrl(path);
+                                            launchUrl(Uri.parse(url));
+                                          },
+                                        ),
+                                      ),
+                                    ]
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          _buildLegend(),
+                          const SizedBox(height: 12),
+
                           // Accordions
                         ExpansionTile(
                           title: const Text("CA Spread Forecast", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
@@ -1406,7 +2126,7 @@ class _MapPageState extends State<MapPage> {
                               Switch(
                                 value: _showCA,
                                 activeTrackColor: Colors.green.shade700,
-                                onChanged: (val) {
+                                onChanged: _selectedDataset == null ? null : (val) {
                                   setState(() {
                                     _showCA = val;
                                     _selectedRegionProps = null;
@@ -1473,11 +2193,14 @@ class _MapPageState extends State<MapPage> {
                                   });
                                 },
                                 onChangeEnd: (val) {
-                                  _fetchForecast(val.round());
+                                  if (_selectedDataset != null) {
+                                    final isOwner = _selectedDataset!['user_id'] == Supabase.instance.client.auth.currentUser?.id;
+                                    final path = isOwner ? _selectedDataset!['raw_filepath'] : _selectedDataset!['perturbed_filepath'];
+                                    final url = Supabase.instance.client.storage.from('datasets').getPublicUrl(path);
+                                    _fetchForecast(val.round(), url);
+                                  }
                                 },
                             ),
-                            const SizedBox(height: 12),
-                            _buildLegend(),
                           ],
                         ),
                         
@@ -1490,7 +2213,7 @@ class _MapPageState extends State<MapPage> {
                               Switch(
                                 value: _showKriging,
                                 activeTrackColor: Colors.green.shade700,
-                                onChanged: (val) {
+                                onChanged: _selectedDataset == null ? null : (val) {
                                   setState(() {
                                     _showKriging = val;
                                     _selectedRegionProps = null;
@@ -1532,8 +2255,6 @@ class _MapPageState extends State<MapPage> {
                                 ),
                               ],
                             ),
-                            const SizedBox(height: 12),
-                            _buildLegend(),
                           ],
                         ),
                         const Divider(height: 20),
@@ -1548,7 +2269,7 @@ class _MapPageState extends State<MapPage> {
                               Switch(
                                 value: _showPlantations,
                                 activeTrackColor: Colors.green.shade700,
-                                onChanged: (val) {
+                                onChanged: _selectedDataset == null ? null : (val) {
                                   setState(() {
                                     _showPlantations = val;
                                     _selectedPlantation = null;
@@ -1611,8 +2332,6 @@ class _MapPageState extends State<MapPage> {
                                   }
                                 },
                             ),
-                            const SizedBox(height: 12),
-                            _buildLegend(),
                           ],
                         ),
                         const Divider(height: 20),
@@ -1713,6 +2432,84 @@ class _MapPageState extends State<MapPage> {
                                     });
                                   }
                                 },
+                            ),
+                            const SizedBox(height: 12),
+                            const Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text("Filter by Date Interval:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            ),
+                            const SizedBox(height: 4),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: OutlinedButton(
+                                    style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 4), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4))),
+                                    onPressed: () async {
+                                      final date = await showDatePicker(
+                                        context: context,
+                                        initialDate: _observationStartDate ?? DateTime.now(),
+                                        firstDate: DateTime(2000),
+                                        lastDate: DateTime.now(),
+                                      );
+                                      if (date != null) {
+                                        setState(() {
+                                          _observationStartDate = date;
+                                          _selectedObservation = null;
+                                        });
+                                      }
+                                    },
+                                    child: Text(_observationStartDate != null ? _observationStartDate!.toString().split(' ')[0] : 'Start Date', style: const TextStyle(fontSize: 11)),
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                Expanded(
+                                  child: OutlinedButton(
+                                    style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 4), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4))),
+                                    onPressed: () async {
+                                      final date = await showDatePicker(
+                                        context: context,
+                                        initialDate: _observationEndDate ?? DateTime.now(),
+                                        firstDate: DateTime(2000),
+                                        lastDate: DateTime.now(),
+                                      );
+                                      if (date != null) {
+                                        setState(() {
+                                          _observationEndDate = date;
+                                          _selectedObservation = null;
+                                        });
+                                      }
+                                    },
+                                    child: Text(_observationEndDate != null ? _observationEndDate!.toString().split(' ')[0] : 'End Date', style: const TextStyle(fontSize: 11)),
+                                  ),
+                                ),
+                                if (_observationStartDate != null || _observationEndDate != null) ...[
+                                  const SizedBox(width: 4),
+                                  IconButton(
+                                    icon: const Icon(Icons.clear, size: 16),
+                                    onPressed: () {
+                                      setState(() {
+                                        _observationStartDate = null;
+                                        _observationEndDate = null;
+                                        _selectedObservation = null;
+                                      });
+                                    },
+                                    padding: EdgeInsets.zero,
+                                    constraints: const BoxConstraints(),
+                                  ),
+                                ],
+                              ],
+                            ),
+                            const SizedBox(height: 12),
+                            SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text("My Observations Only", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                              value: _showMyObservationsOnly,
+                              onChanged: (val) {
+                                setState(() {
+                                  _showMyObservationsOnly = val;
+                                  _selectedObservation = null;
+                                });
+                              },
                             ),
                           ],
                         ),
