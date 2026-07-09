@@ -105,13 +105,9 @@ def get_color_for_value(val):
     else:
         return "#800000"  # Maroon: Severe
 
-def run_ca_simulation(steps=5, grid_resolution=0.12, spread_factor=0.08):
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    csv_path = os.path.join(base_dir, "..", "..", "..", "tulod_falcata_spatial_data.csv")
-    
-    df = pd.read_csv(csv_path)
+def run_ca_simulation(df, steps=5, grid_resolution=0.12, spread_factor=0.08):
     points = df[['longitude', 'latitude']].values
-    values = df['severity_index_pct'].values
+    values = df['GSI'].values
     
     boundary = load_boundary()
     min_lng, min_lat, max_lng, max_lat = boundary.bounds
@@ -178,15 +174,11 @@ def run_ca_simulation(steps=5, grid_resolution=0.12, spread_factor=0.08):
         
     return geojson.FeatureCollection(out_features)
 
-def run_kriging(grid_resolution=0.12):
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    csv_path = os.path.join(base_dir, "..", "..", "..", "tulod_falcata_spatial_data.csv")
-    
-    df = pd.read_csv(csv_path)
-    df = df.dropna(subset=['longitude', 'latitude', 'severity_index_pct']).drop_duplicates(subset=['longitude', 'latitude'])
+def run_kriging(df, grid_resolution=0.12):
+    df = df.dropna(subset=['longitude', 'latitude', 'GSI']).drop_duplicates(subset=['longitude', 'latitude'])
     x = df['longitude'].values
     y = df['latitude'].values
-    z = df['severity_index_pct'].values
+    z = df['GSI'].values
     
     boundary = load_boundary()
     min_lng, min_lat, max_lng, max_lat = boundary.bounds
