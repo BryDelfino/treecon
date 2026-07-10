@@ -22,7 +22,9 @@ def load_boundary():
     simplify it for faster spatial operations.
     """
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    json_path = os.path.join(base_dir, "..", "..", "..", "apps", "commander_web", "assets", "philippines.json")
+    json_path = os.path.join(base_dir, "philippines.json")
+    if not os.path.exists(json_path):
+        json_path = os.path.join(base_dir, "..", "..", "..", "apps", "commander_web", "assets", "philippines.json")
     
     with open(json_path, 'r') as f:
         data = json.load(f)
@@ -53,7 +55,9 @@ def load_boundary():
 
 def get_admin_features():
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    json_path = os.path.join(base_dir, "..", "..", "..", "apps", "commander_web", "assets", "philippines.json")
+    json_path = os.path.join(base_dir, "philippines.json")
+    if not os.path.exists(json_path):
+        json_path = os.path.join(base_dir, "..", "..", "..", "apps", "commander_web", "assets", "philippines.json")
     
     with open(json_path, 'r') as f:
         data = json.load(f)
@@ -106,32 +110,39 @@ def get_color_for_value(val):
         return "#800000"  # Maroon: Severe
 
 def run_ca_simulation(df, steps=5, grid_resolution=0.12, spread_factor=0.08):
-    points = df[['longitude', 'latitude']].values
-    values = df['GSI'].values
+    df = df.dropna(subset=['longitude', 'latitude', 'GSI']).drop_duplicates(subset=['longitude', 'latitude'])
+    x = df['longitude'].values
+    y = df['latitude'].values
+    z = df['GSI'].values
     
     boundary = load_boundary()
     min_lng, min_lat, max_lng, max_lat = boundary.bounds
     
-    # Target resolution of ~0.05 degrees per cell (matching original Mindanao resolution)
-    resolution = 0.05
+    # Target resolution of ~0.08 degrees per cell to balance Kriging performance
+    resolution = 0.08
     nx = int(np.ceil((max_lng - min_lng) / resolution))
     ny = int(np.ceil((max_lat - min_lat) / resolution))
     
-    grid_lng = np.linspace(min_lng, max_lng, nx)
-    grid_lat = np.linspace(min_lat, max_lat, ny)
+    gridx = np.linspace(min_lng, max_lng, nx)
+    gridy = np.linspace(min_lat, max_lat, ny)
+    grid_lng_mesh, grid_lat_mesh = np.meshgrid(gridx, gridy)
     
-    grid_lng_mesh, grid_lat_mesh = np.meshgrid(grid_lng, grid_lat)
+    ok = OrdinaryKriging(
+        x, y, z,
+        variogram_model='spherical',
+        verbose=False,
+        enable_plotting=False
+    )
+    
+    kriging_values, ss = ok.execute('grid', gridx, gridy)
+    kriging_values = np.clip(np.array(kriging_values), 0.0, 100.0)
+    
     grid_points = np.vstack([grid_lng_mesh.ravel(), grid_lat_mesh.ravel()]).T
+    points_filtered = np.column_stack((x, y))
+    dist_mat = distance_matrix(grid_points, points_filtered)
+    min_distances = dist_mat.min(axis=1).reshape(ny, nx)
     
-    dist_mat = distance_matrix(grid_points, points)
-    min_distances = dist_mat.min(axis=1)
-    dist_mat = np.where(dist_mat == 0, 1e-12, dist_mat)
-    weights = 1.0 / (dist_mat ** 2.0)
-    weights /= weights.sum(axis=1, keepdims=True)
-    
-    initial_values = np.dot(weights, values)
-    # Apply distance threshold of 1.5 degrees to avoid global average in far regions
-    initial_values = np.where(min_distances > 1.5, 0.0, initial_values).reshape(ny, nx)
+    initial_values = np.where(min_distances > 1.5, 0.0, kriging_values)
     current_grid = initial_values.copy()
     
     # 3x3 averaging kernel for 8-neighbor Moore neighborhood convolve
