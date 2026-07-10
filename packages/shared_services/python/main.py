@@ -40,6 +40,8 @@ def get_forecast(req: CARequest):
         if response.status_code != 200:
             raise HTTPException(status_code=400, detail="Failed to download dataset")
         df = pd.read_csv(io.StringIO(response.text))
+        # Drop rows missing critical values that would crash the simulation math
+        df = df.dropna(subset=['latitude', 'longitude', 'GSI'])
         
         result = simulation.run_ca_simulation(
             df=df,
@@ -59,6 +61,8 @@ def get_kriging(req: KrigingRequest):
         if response.status_code != 200:
             raise HTTPException(status_code=400, detail="Failed to download dataset")
         df = pd.read_csv(io.StringIO(response.text))
+        # Drop rows missing critical values that would crash Kriging math
+        df = df.dropna(subset=['latitude', 'longitude', 'GSI'])
         
         result = simulation.run_kriging(df=df)
         return result
