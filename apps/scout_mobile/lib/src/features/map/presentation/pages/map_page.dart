@@ -44,11 +44,67 @@ class _MapPageState extends State<MapPage> {
   bool _isDatasetsLoading = false;
   List<Map<String, dynamic>> _availableDatasets = [];
   Map<String, dynamic>? _selectedDataset;
+  String? _currentUserRole;
+
+  DateTime? _datasetStartDate;
+  DateTime? _datasetEndDate;
+  bool _showMyDatasetsOnly = false;
+  String _datasetVisibilityFilter = 'All';
+
+  List<Map<String, dynamic>> get _filteredDatasets {
+    return _availableDatasets.where((ds) {
+      if (_currentUserRole == 'EXPERT') {
+        if (_showMyDatasetsOnly) {
+          final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+          if (currentUserId != null && ds['user_id'] != currentUserId) {
+            return false;
+          }
+        }
+        if (_datasetVisibilityFilter != 'All') {
+          final isPublic = ds['is_public'] == true;
+          if (_datasetVisibilityFilter == 'Public' && !isPublic) return false;
+          if (_datasetVisibilityFilter == 'Private' && isPublic) return false;
+        }
+      }
+
+      if (_datasetStartDate != null || _datasetEndDate != null) {
+        final dateStr = ds['created_at'] as String?;
+        if (dateStr != null) {
+          final date = DateTime.tryParse(dateStr);
+          if (date != null) {
+            if (_datasetStartDate != null && date.isBefore(_datasetStartDate!)) return false;
+            if (_datasetEndDate != null && date.isAfter(_datasetEndDate!.add(const Duration(days: 1)))) return false;
+          }
+        }
+      }
+      return true;
+    }).toList();
+  }
 
   // Plantation state
   bool _showPlantations = false;
   bool _isPlantationsLoading = false;
   List<Map<String, dynamic>> _plantationsData = [];
+  bool _isPlantationExpanded = false;
+  bool _isCaExpanded = false;
+  bool _isKrigingExpanded = false;
+  String _selectedPlantationProvince = 'All';
+  String _selectedPlantationSeverity = 'All';
+  final List<String> _availableSeverities = ['All', 'Healthy', 'Low', 'Moderate', 'High', 'Severe'];
+  final Map<String, String> _provinceToRegion = {};
+
+  // Observations state
+  bool _showObservations = false;
+  bool _isObservationsExpanded = false;
+  String _selectedObservationVerification = 'All';
+  String _selectedObservationUserRole = 'All';
+  String _selectedObservationProvince = 'All';
+  DateTime? _observationStartDate;
+  DateTime? _observationEndDate;
+  bool _showMyObservationsOnly = false;
+  List<Map<String, dynamic>> _observationsData = [];
+  final List<String> _availableVerificationStatuses = ['All', 'Verified', 'Unverified'];
+  final List<String> _availableUserRoles = ['All', 'Expert', 'Community'];
 
   StreamSubscription<bool>? _networkSub;
 
@@ -185,6 +241,124 @@ class _MapPageState extends State<MapPage> {
     )).toList();
   }
 
+  bool _isPointInPolygon(LatLng point, List<LatLng> polygon) {
+    bool isInside = false;
+    for (int i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+      if (((polygon[i].latitude > point.latitude) != (polygon[j].latitude > point.latitude)) &&
+          (point.longitude < (polygon[j].longitude - polygon[i].longitude) * (point.latitude - polygon[i].latitude) / (polygon[j].latitude - polygon[i].latitude) + polygon[i].longitude)) {
+        isInside = !isInside;
+      }
+    }
+    return isInside;
+  }
+
+  List<String> get _availableProvinces {
+    final Set<String> provinces = {'All'};
+    for (var poly in _countryPolygons) {
+      final props = poly.hitValue as Map<String, dynamic>?;
+      if (props != null) {
+        final name = props['adm2_name'] as String?;
+        final region = props['adm1_name'] as String?;
+        if (name != null) {
+          provinces.add(name);
+          if (region != null && region.isNotEmpty) {
+            _provinceToRegion[name] = region;
+          }
+        }
+      }
+    }
+    final list = provinces.toList();
+    list.sort((a, b) {
+      if (a == 'All') return -1;
+      if (b == 'All') return 1;
+      final regionA = _provinceToRegion[a] ?? '';
+      final regionB = _provinceToRegion[b] ?? '';
+      final regionCompare = regionA.compareTo(regionB);
+      if (regionCompare != 0) return regionCompare;
+      return a.compareTo(b);
+    });
+    return list;
+  }
+
+  List<DropdownMenuItem<String>> _buildProvinceDropdownItems() {
+    final items = <DropdownMenuItem<String>>[];
+    items.add(
+      const DropdownMenuItem(
+        value: 'All',
+        child: Text('All Provinces', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+      )
+    );
+    
+    final grouped = <String, List<String>>{};
+    for (final prov in _availableProvinces) {
+      if (prov == 'All') continue;
+      final region = _provinceToRegion[prov] ?? 'Other Regions';
+      grouped.putIfAbsent(region, () => []).add(prov);
+    }
+    
+    final sortedRegions = grouped.keys.toList()..sort();
+    for (final region in sortedRegions) {
+      items.add(
+        DropdownMenuItem(
+          value: 'HEADER_$region',
+          enabled: false,
+          child: Text(
+            region,
+            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.green.shade800),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        )
+      );
+      for (final prov in grouped[region]!) {
+        items.add(
+          DropdownMenuItem(
+            value: prov,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 16.0),
+              child: Text(
+                prov, 
+                style: const TextStyle(fontSize: 12),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          )
+        );
+      }
+    }
+    return items;
+  }
+
+  List<Widget> _buildProvinceSelectedItems(BuildContext context) {
+    return _buildProvinceDropdownItems().map((item) {
+      if (item.value?.startsWith('HEADER_') == true) return const SizedBox.shrink();
+      if (item.value == 'All') return const Align(alignment: Alignment.centerLeft, child: Text('All Provinces', style: TextStyle(fontSize: 12)));
+      final prov = item.value!;
+      return Align(
+        alignment: Alignment.centerLeft, 
+        child: Text(
+          prov, 
+          style: const TextStyle(fontSize: 12),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+        ),
+      );
+    }).toList();
+  }
+
+  String _getProvinceForObservation(LatLng point) {
+    for (var poly in _countryPolygons) {
+      if (_isPointInPolygon(point, poly.points)) {
+        final props = poly.hitValue as Map<String, dynamic>?;
+        if (props != null && props['adm2_name'] != null && props['adm2_name'] != 'Special Geographic Area') {
+          return props['adm2_name'];
+        }
+      }
+    }
+    return 'Unknown';
+  }
+
   String _getSeverityClass(double value) {
     if (value < 10.0) return "Healthy";
     if (value < 25.0) return "Low";
@@ -221,7 +395,18 @@ class _MapPageState extends State<MapPage> {
           .where((ds) => ds['is_deleted'] != true)
           .toList();
 
-      // Fetch user profiles separately
+      // Fetch current user's profile to check role
+      final currentUserProfile = await Supabase.instance.client
+          .from('users')
+          .select('role')
+          .eq('user_id', user.id)
+          .maybeSingle();
+      
+      if (currentUserProfile != null) {
+        _currentUserRole = currentUserProfile['role']?.toString().toUpperCase();
+      }
+
+      // Fetch dataset authors profiles separately
       final userIds = datasets.map((ds) => ds['user_id']).whereType<String>().toSet().toList();
       if (userIds.isNotEmpty) {
         final usersResponse = await Supabase.instance.client
@@ -285,7 +470,6 @@ class _MapPageState extends State<MapPage> {
         final List<dynamic> data = json.decode(response.body);
         setState(() {
           _plantationsData = data.cast<Map<String, dynamic>>();
-          _showPlantations = true;
         });
       } else {
         debugPrint("API Error: ${response.statusCode}");
@@ -298,7 +482,18 @@ class _MapPageState extends State<MapPage> {
   }
 
   List<Marker> _buildPlantationMarkers() {
-    return _plantationsData.map((p) {
+    final filtered = _plantationsData.where((p) {
+      final lat = double.tryParse(p['latitude'].toString()) ?? 0.0;
+      final lng = double.tryParse(p['longitude'].toString()) ?? 0.0;
+      final severity = double.tryParse((p['GSI'] ?? p['severity_index_pct'] ?? 0.0).toString()) ?? 0.0;
+      
+      if (_selectedPlantationSeverity != 'All' && _getSeverityClass(severity) != _selectedPlantationSeverity) return false;
+      if (_selectedPlantationProvince != 'All' && _getProvinceForObservation(LatLng(lat, lng)) != _selectedPlantationProvince) return false;
+      
+      return true;
+    }).toList();
+
+    return filtered.map((p) {
       final lat = double.tryParse(p['latitude'].toString()) ?? 0.0;
       final lng = double.tryParse(p['longitude'].toString()) ?? 0.0;
       
@@ -336,6 +531,269 @@ class _MapPageState extends State<MapPage> {
         ),
       );
     }).toList();
+  }
+
+  // --- Observation Fetching ---
+  Future<void> _fetchObservations() async {
+    debugPrint('[OBS] _fetchObservations() called');
+    try {
+      final response = await Supabase.instance.client
+          .from('observations')
+          .select('*, users!observations_user_id_fkey(user_name, role, avatar_url)')
+          .order('observation_timestamp', ascending: false);
+
+      if (mounted) {
+        setState(() {
+          _observationsData = List<Map<String, dynamic>>.from(response);
+        });
+      }
+      debugPrint('[OBS] fetched ${_observationsData.length} observations');
+    } catch (e) {
+      debugPrint('[OBS] ERROR fetching observations: $e');
+    }
+  }
+
+  Map<String, double>? _parseCoordinates(dynamic coords) {
+    if (coords == null) return null;
+    if (coords is Map) {
+      final map = coords.cast<String, dynamic>();
+      final list = map['coordinates'];
+      if (list is List && list.length >= 2) {
+        return {'lat': (list[1] as num).toDouble(), 'lng': (list[0] as num).toDouble()};
+      }
+    } else if (coords is String) {
+      if (coords.toUpperCase().startsWith('POINT(')) {
+        final inner = coords.substring(6, coords.length - 1).split(' ');
+        if (inner.length >= 2) {
+          final lng = double.tryParse(inner[0]);
+          final lat = double.tryParse(inner[1]);
+          if (lat != null && lng != null) return {'lat': lat, 'lng': lng};
+        }
+      }
+      // EWKB hex from PostGIS
+      if (coords.length >= 42 && RegExp(r'^[0-9a-fA-F]+$').hasMatch(coords)) {
+        try {
+          return _parseEWKBHex(coords);
+        } catch (e) {
+          debugPrint('[OBS] EWKB parse error: $e');
+        }
+      }
+    }
+    return null;
+  }
+
+  Map<String, double>? _parseEWKBHex(String hex) {
+    final bytes = Uint8List(hex.length ~/ 2);
+    for (var i = 0; i < hex.length; i += 2) {
+      bytes[i ~/ 2] = int.parse(hex.substring(i, i + 2), radix: 16);
+    }
+    final byteData = ByteData.view(bytes.buffer);
+    final byteOrder = bytes[0];
+    final endian = byteOrder == 1 ? Endian.little : Endian.big;
+    final geomType = byteData.getUint32(1, endian);
+    final hasSRID = (geomType & 0x20000000) != 0;
+    final coordOffset = hasSRID ? 9 : 5;
+    final lng = byteData.getFloat64(coordOffset, endian);
+    final lat = byteData.getFloat64(coordOffset + 8, endian);
+    return {'lat': lat, 'lng': lng};
+  }
+
+  bool _isObservationInProvince(Map<String, dynamic> obs, String province) {
+    if (province == 'All') return true;
+    final coords = _parseCoordinates(obs['coordinates']);
+    final lat = coords?['lat'] ?? 0.0;
+    final lng = coords?['lng'] ?? 0.0;
+    final point = LatLng(lat, lng);
+    for (var poly in _countryPolygons) {
+      if (_isPointInPolygon(point, poly.points)) {
+        final props = poly.hitValue as Map<String, dynamic>?;
+        if (props != null && props['adm2_name'] == province) return true;
+      }
+    }
+    return false;
+  }
+
+  List<Marker> _buildObservationMarkers() {
+    final filtered = _observationsData.where((obs) {
+      if (obs['is_deleted'] == true) return false;
+      final isVerified = obs['is_verified'] == true || obs['sync_status'] == 'verified';
+      if (_selectedObservationVerification == 'Verified' && !isVerified) return false;
+      if (_selectedObservationVerification == 'Unverified' && isVerified) return false;
+
+      final role = obs['users'] != null && obs['users'] is Map
+          ? (obs['users'] as Map)['role']?.toString().toUpperCase()
+          : null;
+      final isExpert = role == 'EXPERT';
+      if (_selectedObservationUserRole == 'Expert' && !isExpert) return false;
+      if (_selectedObservationUserRole == 'Community' && isExpert) return false;
+
+      if (_showMyObservationsOnly && obs['user_id'] != Supabase.instance.client.auth.currentUser?.id) return false;
+
+      if (_observationStartDate != null || _observationEndDate != null) {
+        final obsDateStr = obs['observation_timestamp'] as String?;
+        if (obsDateStr != null) {
+          final obsDate = DateTime.tryParse(obsDateStr);
+          if (obsDate != null) {
+            if (_observationStartDate != null && obsDate.isBefore(_observationStartDate!)) return false;
+            if (_observationEndDate != null && obsDate.isAfter(_observationEndDate!.add(const Duration(days: 1)))) return false;
+          }
+        }
+      }
+
+      return _isObservationInProvince(obs, _selectedObservationProvince);
+    }).toList();
+
+    return filtered.map((obs) {
+      final coords = _parseCoordinates(obs['coordinates']);
+      final lat = coords?['lat'] ?? 0.0;
+      final lng = coords?['lng'] ?? 0.0;
+      final confidence = double.tryParse(obs['confidence_score']?.toString() ?? '') ?? 0.0;
+      final isVerified = obs['is_verified'] == true || obs['sync_status'] == 'verified';
+
+      Color color;
+      if (confidence >= 80.0) {
+        color = const Color(0xFFF44336);
+      } else if (confidence >= 60.0) {
+        color = const Color(0xFFFF9800);
+      } else if (confidence >= 40.0) {
+        color = const Color(0xFFFFEB3B);
+      } else {
+        color = const Color(0xFF4CAF50);
+      }
+
+      return Marker(
+        point: LatLng(lat, lng),
+        width: 24,
+        height: 24,
+        child: GestureDetector(
+          onTap: () => _showObservationInfoSheet(obs),
+          child: Container(
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.rectangle,
+              borderRadius: isVerified ? BorderRadius.circular(6) : null,
+              border: Border.all(color: Colors.white, width: 2),
+              boxShadow: const [
+                BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))
+              ],
+            ),
+            child: isVerified
+              ? const Icon(Icons.star, size: 14, color: Colors.white)
+              : const Icon(Icons.warning_amber_rounded, size: 14, color: Colors.white),
+          ),
+        ),
+      );
+    }).toList();
+  }
+
+  void _showObservationInfoSheet(Map<String, dynamic> obs) {
+    final coords = _parseCoordinates(obs['coordinates']);
+    final lat = coords?['lat'] ?? 0.0;
+    final lng = coords?['lng'] ?? 0.0;
+    final isOwner = obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
+    final province = _getProvinceForObservation(LatLng(lat, lng));
+    final isVerified = obs['is_verified'] == true || obs['sync_status'] == 'verified';
+    final date = obs['observation_timestamp'] != null
+        ? DateTime.tryParse(obs['observation_timestamp'])?.toLocal().toString().split('.')[0] ?? 'Unknown Date'
+        : 'Unknown Date';
+    final imageUrl = obs['image_url']?.toString();
+    final confidence = obs['confidence_score']?.toString() ?? 'N/A';
+    final remarks = obs['remarks']?.toString() ?? 'No remarks provided.';
+
+    final contributorName = obs['users'] != null && obs['users'] is Map
+        ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
+        : 'Unknown User';
+    final role = obs['users'] != null && obs['users'] is Map
+        ? (obs['users'] as Map)['role']?.toString().toUpperCase()
+        : null;
+    final isExpert = role == 'EXPERT';
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24.0)),
+      ),
+      builder: (context) {
+        return Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              Row(
+                children: [
+                  Icon(Icons.person_pin_circle, color: Colors.blue[700]),
+                  const SizedBox(width: 8),
+                  const Text("Field Observation", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                ],
+              ),
+              const Divider(height: 20),
+              if (imageUrl != null && imageUrl.isNotEmpty) ...[
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.network(imageUrl, height: 140, width: double.infinity, fit: BoxFit.cover,
+                    errorBuilder: (context, error, stackTrace) => const SizedBox(height: 140, child: Center(child: Icon(Icons.broken_image, color: Colors.grey))),
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ],
+              Row(
+                children: [
+                  Icon(isVerified ? Icons.verified : Icons.pending, size: 16, color: isVerified ? Colors.blue : Colors.orange),
+                  const SizedBox(width: 4),
+                  Text(isVerified ? "Verified" : "Unverified", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: isVerified ? Colors.blue : Colors.orange)),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Row(
+                children: [
+                  const Icon(Icons.person, size: 14, color: Colors.grey),
+                  const SizedBox(width: 4),
+                  Text(contributorName, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                  if (isExpert) ...[
+                    const SizedBox(width: 4),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                      decoration: BoxDecoration(color: Colors.blue.shade100, borderRadius: BorderRadius.circular(4)),
+                      child: Text('EXPERT', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.blue.shade900)),
+                    ),
+                  ],
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text("Province: $province", style: const TextStyle(fontSize: 13)),
+              Text("Date: $date", style: const TextStyle(fontSize: 13)),
+              if (isOwner)
+                Text("Lat/Lng: ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}", style: const TextStyle(fontSize: 13)),
+              const SizedBox(height: 4),
+              Text(
+                "Confidence: $confidence%",
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  color: (double.tryParse(confidence) ?? 0) >= 60.0 ? Colors.red : Colors.green,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text("Remarks: $remarks", style: const TextStyle(fontSize: 13)),
+              const SizedBox(height: 16),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   // --- Kriging Fetch ---
@@ -545,41 +1003,187 @@ class _MapPageState extends State<MapPage> {
                       _isDatasetsLoading
                         ? const Center(child: SizedBox(height: 24, width: 24, child: CircularProgressIndicator(strokeWidth: 2)))
                         : Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            height: 200,
                             decoration: BoxDecoration(
-                              border: Border.all(color: Colors.grey.shade300),
-                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.grey.shade400),
+                              borderRadius: BorderRadius.circular(8),
+                              color: Colors.white,
                             ),
-                            child: DropdownButtonHideUnderline(
-                              child: DropdownButton<String>(
-                                value: _selectedDataset?['raw_filepath'],
-                                hint: const Text('Select a dataset...', style: TextStyle(fontSize: 13)),
-                                isExpanded: true,
-                                icon: const Icon(Icons.arrow_drop_down),
-                                items: _availableDatasets.map((ds) {
-                                  final isOwner = ds['user_id'] == Supabase.instance.client.auth.currentUser?.id;
-                                  final uploaderName = ds['users'] != null && ds['users'] is Map
-                                    ? (ds['users'] as Map)['user_name']?.toString() ?? 'Unknown'
-                                    : 'Unknown';
-                                  return DropdownMenuItem<String>(
-                                    value: ds['raw_filepath'] as String,
-                                    child: Text(
-                                      '${ds['filename']}${isOwner ? ' (Mine)' : ' by $uploaderName'}',
-                                      style: const TextStyle(fontSize: 13),
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  );
-                                }).toList(),
-                                onChanged: (val) {
-                                  final dataset = _availableDatasets.firstWhere(
-                                    (ds) => ds['raw_filepath'] == val,
-                                  );
-                                  _onDatasetSelected(dataset);
-                                  setModalState(() {});
-                                },
+                            child: _filteredDatasets.isEmpty 
+                              ? const Center(child: Text("No datasets found", style: TextStyle(color: Colors.grey, fontSize: 12)))
+                              : ListView.builder(
+                                  itemCount: _filteredDatasets.length,
+                                  itemBuilder: (context, index) {
+                                    final dataset = _filteredDatasets[index];
+                                    final isSelected = _selectedDataset != null && _selectedDataset!['raw_filepath'] == dataset['raw_filepath'];
+                                    final isOwner = dataset['user_id'] == Supabase.instance.client.auth.currentUser?.id;
+                                    final uploaderName = dataset['users'] != null && dataset['users'] is Map
+                                        ? (dataset['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
+                                        : 'Unknown User';
+                                    final dateStr = dataset['created_at'] != null ? DateTime.tryParse(dataset['created_at'].toString())?.toString().split(' ')[0] ?? '' : '';
+                                    
+                                    return Card(
+                                      margin: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                      color: isSelected ? Colors.green.shade100 : Colors.white,
+                                      elevation: isSelected ? 2 : 0,
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(6),
+                                        side: BorderSide(color: isSelected ? Colors.green.shade600 : Colors.grey.shade200),
+                                      ),
+                                      child: ListTile(
+                                        dense: true,
+                                        contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
+                                        title: Row(
+                                          children: [
+                                            Expanded(child: Text(dataset['filename'] ?? 'Dataset', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)),
+                                            const SizedBox(width: 4),
+                                            Container(
+                                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                              decoration: BoxDecoration(
+                                                color: dataset['is_public'] == true ? Colors.green.shade50 : Colors.grey.shade100,
+                                                borderRadius: BorderRadius.circular(4),
+                                                border: Border.all(color: dataset['is_public'] == true ? Colors.green.shade200 : Colors.grey.shade300),
+                                              ),
+                                              child: Text(
+                                                dataset['is_public'] == true ? 'Public' : 'Private',
+                                                style: TextStyle(fontSize: 9, color: dataset['is_public'] == true ? Colors.green.shade700 : Colors.grey.shade700, fontWeight: FontWeight.bold),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        subtitle: Text('By: $uploaderName • $dateStr', style: const TextStyle(fontSize: 10)),
+                                        trailing: isOwner 
+                                          ? const Icon(Icons.star, size: 14, color: Colors.orange)
+                                          : const Icon(Icons.public, size: 14, color: Colors.grey),
+                                        onTap: () {
+                                          _onDatasetSelected(dataset);
+                                          setModalState(() {});
+                                        },
+                                      ),
+                                    );
+                                  },
+                                ),
+                          ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          if (_currentUserRole == 'EXPERT')
+                            Expanded(
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8),
+                                decoration: BoxDecoration(
+                                  border: Border.all(color: Colors.grey.shade300),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: DropdownButtonHideUnderline(
+                                  child: DropdownButton<String>(
+                                    isExpanded: true,
+                                    value: _datasetVisibilityFilter,
+                                    items: ['All', 'Public', 'Private'].map((v) => DropdownMenuItem(value: v, child: Text(v, style: const TextStyle(fontSize: 12)))).toList(),
+                                    onChanged: (val) {
+                                      if (val != null) {
+                                        setModalState(() => _datasetVisibilityFilter = val);
+                                        setState(() => _datasetVisibilityFilter = val);
+                                      }
+                                    },
+                                  ),
+                                ),
                               ),
                             ),
+                          if (_currentUserRole == 'EXPERT')
+                            const SizedBox(width: 8),
+                          Expanded(
+                            child: OutlinedButton(
+                              style: OutlinedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(horizontal: 4), 
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                side: BorderSide(color: Colors.grey.shade300),
+                              ),
+                              onPressed: () async {
+                                final date = await showDatePicker(
+                                  context: context,
+                                  initialDate: _datasetStartDate ?? DateTime.now(),
+                                  firstDate: DateTime(2000),
+                                  lastDate: DateTime.now(),
+                                );
+                                if (date != null) {
+                                  setModalState(() => _datasetStartDate = date);
+                                  setState(() => _datasetStartDate = date);
+                                }
+                              },
+                              child: Text(_datasetStartDate != null ? _datasetStartDate!.toString().split(' ')[0] : 'Start Date', style: const TextStyle(fontSize: 12)),
+                            ),
                           ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: OutlinedButton(
+                              style: OutlinedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(horizontal: 4), 
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                side: BorderSide(color: Colors.grey.shade300),
+                              ),
+                              onPressed: () async {
+                                final date = await showDatePicker(
+                                  context: context,
+                                  initialDate: _datasetEndDate ?? DateTime.now(),
+                                  firstDate: DateTime(2000),
+                                  lastDate: DateTime.now(),
+                                );
+                                if (date != null) {
+                                  setModalState(() => _datasetEndDate = date);
+                                  setState(() => _datasetEndDate = date);
+                                }
+                              },
+                              child: Text(_datasetEndDate != null ? _datasetEndDate!.toString().split(' ')[0] : 'End Date', style: const TextStyle(fontSize: 12)),
+                            ),
+                          ),
+                          if (_datasetStartDate != null || _datasetEndDate != null) ...[
+                            const SizedBox(width: 4),
+                            IconButton(
+                              icon: const Icon(Icons.clear, size: 16),
+                              onPressed: () {
+                                setModalState(() { _datasetStartDate = null; _datasetEndDate = null; });
+                                setState(() { _datasetStartDate = null; _datasetEndDate = null; });
+                              },
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                            ),
+                          ],
+                        ],
+                      ),
+                      if (_currentUserRole == 'EXPERT')
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text("My Datasets Only", style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+                          value: _showMyDatasetsOnly,
+                          activeTrackColor: Colors.green.shade200,
+                          activeThumbColor: Colors.green.shade700,
+                          onChanged: (val) {
+                            setModalState(() => _showMyDatasetsOnly = val);
+                            setState(() {
+                              _showMyDatasetsOnly = val;
+                              _selectedDataset = null;
+                              _showCA = false;
+                              _showKriging = false;
+                              _showPlantations = false;
+                              _caPolygons.clear();
+                              _krigingPolygons.clear();
+                              _plantationsData.clear();
+                            });
+                          },
+                        ),
+                      if (_currentUserRole == 'EXPERT')
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8.0),
+                          child: Text(
+                            'Note: Uploading and deletion of datasets can be done using the Commander web app.',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey[700],
+                              fontStyle: FontStyle.italic,
+                            ),
+                          ),
+                        ),
                       const SizedBox(height: 20),
 
                       // --- Simulation Layers ---
@@ -593,187 +1197,428 @@ class _MapPageState extends State<MapPage> {
                         ),
                       ),
                       const SizedBox(height: 8),
-                      CheckboxListTile(
-                        title: const Text(
-                          "Plantation Points",
-                          style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                      ExpansionTile(
+                        tilePadding: const EdgeInsets.only(left: 16, right: 8),
+                        title: const Text("Plantation Points", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                        leading: Icon(Icons.location_on, color: _showPlantations ? Colors.green.shade700 : Colors.grey),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Switch(
+                              value: _showPlantations,
+                              activeTrackColor: Colors.green.shade700,
+                              onChanged: _selectedDataset == null ? null : (val) {
+                                setModalState(() {
+                                  _showPlantations = val;
+                                });
+                                setState(() {
+                                  _showPlantations = val;
+                                });
+                              },
+                            ),
+                            Icon(
+                              _isPlantationExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                              color: Colors.grey,
+                            ),
+                          ],
                         ),
-                        secondary: Icon(Icons.scatter_plot, color: _showPlantations ? Colors.green[700] : Colors.grey),
-                        value: _showPlantations,
-                        activeColor: Colors.green[700],
-                        onChanged: _selectedDataset == null ? null : (bool? val) {
+                        onExpansionChanged: (expanded) {
                           setModalState(() {
-                            _showPlantations = val ?? false;
-                          });
-                          setState(() {
-                            _showPlantations = val ?? false;
+                            _isPlantationExpanded = expanded;
                           });
                         },
-                        controlAffinity: ListTileControlAffinity.leading,
-                        contentPadding: EdgeInsets.zero,
-                        dense: true,
+                        childrenPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        children: [
+                          const Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text("Filter by Province:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          ),
+                          const SizedBox(height: 4),
+                          DropdownButton<String>(
+                            isExpanded: true,
+                            value: _selectedPlantationProvince,
+                            items: _buildProvinceDropdownItems(),
+                            selectedItemBuilder: _buildProvinceSelectedItems,
+                            onChanged: (val) {
+                              if (val != null) {
+                                setModalState(() {
+                                  _selectedPlantationProvince = val;
+                                });
+                                setState(() {
+                                  _selectedPlantationProvince = val;
+                                });
+                              }
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          const Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text("Filter by Severity:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          ),
+                          const SizedBox(height: 4),
+                          DropdownButton<String>(
+                            isExpanded: true,
+                            value: _selectedPlantationSeverity,
+                            items: _availableSeverities.map((sev) {
+                              return DropdownMenuItem(
+                                value: sev,
+                                child: Text(sev, style: const TextStyle(fontSize: 12)),
+                              );
+                            }).toList(),
+                            onChanged: (val) {
+                              if (val != null) {
+                                setModalState(() {
+                                  _selectedPlantationSeverity = val;
+                                });
+                                setState(() {
+                                  _selectedPlantationSeverity = val;
+                                });
+                              }
+                            },
+                          ),
+                        ],
                       ),
-                      CheckboxListTile(
+                      ExpansionTile(
+                        tilePadding: const EdgeInsets.only(left: 16, right: 8),
                         title: Row(
                           children: [
-                            const Text(
-                              "Gall Rust Spread Forecast",
-                              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                            const Expanded(
+                              child: Text(
+                                "Gall Rust Spread\nForecast",
+                                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                              ),
                             ),
                             const SizedBox(width: 4),
                             Tooltip(
                               message: '⚠️ The step count has not yet been\ncalibrated to a specific time period.\nEach step is a simulation iteration,\nnot a day, week, or month.',
                               child: Icon(Icons.info_outline, size: 16, color: Colors.amber[700]),
                             ),
+                            if (_isCaLoading) ...[
+                              const SizedBox(width: 12),
+                              const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)),
+                            ],
                           ],
                         ),
-                        secondary: Icon(Icons.online_prediction, color: _showCA ? Colors.green[700] : Colors.grey),
-                        value: _showCA,
-                        activeColor: Colors.green[700],
-                        onChanged: _selectedDataset == null ? null : (bool? val) {
-                          setModalState(() {
-                            _showCA = val ?? false;
-                          });
-                          setState(() {
-                            _showCA = val ?? false;
-                          });
-                        },
-                        controlAffinity: ListTileControlAffinity.leading,
-                        contentPadding: EdgeInsets.zero,
-                        dense: true,
-                      ),
-                      CheckboxListTile(
-                        title: const Text(
-                          "Gall Rust Spread Mapper",
-                          style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
-                        ),
-                        secondary: Icon(Icons.grain, color: _showKriging ? Colors.green[700] : Colors.grey),
-                        value: _showKriging,
-                        activeColor: Colors.green[700],
-                        onChanged: _selectedDataset == null ? null : (bool? val) {
-                          setModalState(() {
-                            _showKriging = val ?? false;
-                          });
-                          setState(() {
-                            _showKriging = val ?? false;
-                          });
-                        },
-                        controlAffinity: ListTileControlAffinity.leading,
-                        contentPadding: EdgeInsets.zero,
-                        dense: true,
-                      ),
-
-                      // --- CA Steps Slider ---
-                      if (_showCA) ...[
-                        const SizedBox(height: 16),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        leading: Icon(Icons.online_prediction, color: _showCA ? Colors.green.shade700 : Colors.grey),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Text(
-                              "Forecast Steps",
-                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                            ),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: Colors.green[100],
-                                borderRadius: BorderRadius.circular(12),
-                              ),
-                              child: Text(
-                                "Step $_caSteps",
-                                style: TextStyle(
-                                  color: Colors.green[800],
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
-                        Slider(
-                          value: _caSteps.toDouble(),
-                          min: 1,
-                          max: 15,
-                          divisions: 14,
-                          activeColor: Colors.green[700],
-                          onChanged: (val) {
-                            setModalState(() {
-                              _caSteps = val.round();
-                            });
-                            setState(() {
-                              _caSteps = val.round();
-                            });
-                          },
-                          onChangeEnd: (val) {
-                            if (_selectedDataset != null) {
-                              final url = _getDatasetPublicUrl(_selectedDataset!);
-                              _fetchForecast(val.round(), url);
-                            }
-                          },
-                        ),
-                      ],
-
-                      // --- Opacity Sliders ---
-                      const SizedBox(height: 16),
-                      const Text(
-                        "LAYER OPACITY",
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.grey,
-                          letterSpacing: 1.1,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          const SizedBox(width: 8),
-                          const Text("CA", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
-                          Expanded(
-                            child: Slider(
-                              value: _caOpacity,
-                              min: 0.0,
-                              max: 1.0,
-                              divisions: 10,
-                              activeColor: Colors.green[700],
-                              onChanged: (val) {
-                                setModalState(() => _caOpacity = val);
-                                setState(() => _caOpacity = val);
+                            Switch(
+                              value: _showCA,
+                              activeTrackColor: Colors.green.shade700,
+                              onChanged: _selectedDataset == null ? null : (val) {
+                                setModalState(() {
+                                  _showCA = val;
+                                });
+                                setState(() {
+                                  _showCA = val;
+                                });
                               },
                             ),
-                          ),
-                          SizedBox(
-                            width: 36,
-                            child: Text(
-                              '${(_caOpacity * 100).round()}%',
-                              style: const TextStyle(fontSize: 11),
+                            Icon(
+                              _isCaExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                              color: Colors.grey,
                             ),
+                          ],
+                        ),
+                        onExpansionChanged: (expanded) {
+                          setModalState(() {
+                            _isCaExpanded = expanded;
+                          });
+                        },
+                        childrenPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        children: [
+                          // Opacity Slider
+                          Row(
+                            children: [
+                              const Text("Opacity:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                              Expanded(
+                                child: Slider(
+                                  value: _caOpacity,
+                                  min: 0.0,
+                                  max: 1.0,
+                                  activeColor: Colors.green.shade700,
+                                  onChanged: (val) {
+                                    setModalState(() => _caOpacity = val);
+                                    setState(() => _caOpacity = val);
+                                  },
+                                ),
+                              ),
+                              SizedBox(
+                                width: 36,
+                                child: Text(
+                                  '${(_caOpacity * 100).round()}%',
+                                  style: const TextStyle(fontSize: 11),
+                                ),
+                              ),
+                            ],
+                          ),
+                          // Forecast Step Slider
+                          const SizedBox(height: 8),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Row(
+                                children: [
+                                  const Text("Forecast Steps:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                                  const SizedBox(width: 4),
+                                  Tooltip(
+                                    message: "A 'step' represents a mathematical cycle of spread.",
+                                    child: Icon(Icons.info_outline, size: 14, color: Colors.grey.shade600),
+                                  ),
+                                ],
+                              ),
+                              Text("Step $_caSteps", style: TextStyle(color: Colors.green.shade700, fontWeight: FontWeight.bold, fontSize: 12)),
+                            ],
+                          ),
+                          Slider(
+                            value: _caSteps.toDouble(),
+                            min: 1,
+                            max: 15,
+                            divisions: 14,
+                            activeColor: Colors.green.shade700,
+                            onChanged: (val) {
+                              setModalState(() {
+                                _caSteps = val.round();
+                              });
+                              setState(() {
+                                _caSteps = val.round();
+                              });
+                            },
+                            onChangeEnd: (val) {
+                              if (_selectedDataset != null) {
+                                final url = _getDatasetPublicUrl(_selectedDataset!);
+                                _fetchForecast(val.round(), url);
+                              }
+                            },
                           ),
                         ],
                       ),
-                      Row(
-                        children: [
-                          const SizedBox(width: 8),
-                          const Text("Kriging", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
-                          Expanded(
-                            child: Slider(
-                              value: _krigingOpacity,
-                              min: 0.0,
-                              max: 1.0,
-                              divisions: 10,
-                              activeColor: Colors.green[700],
-                              onChanged: (val) {
-                                setModalState(() => _krigingOpacity = val);
-                                setState(() => _krigingOpacity = val);
+                      
+                      ExpansionTile(
+                        tilePadding: const EdgeInsets.only(left: 16, right: 8),
+                        title: const Text("Gall Rust Spread\nMapper", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                        leading: Icon(Icons.grain, color: _showKriging ? Colors.green.shade700 : Colors.grey),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Switch(
+                              value: _showKriging,
+                              activeTrackColor: Colors.green.shade700,
+                              onChanged: _selectedDataset == null ? null : (val) {
+                                setModalState(() {
+                                  _showKriging = val;
+                                });
+                                setState(() {
+                                  _showKriging = val;
+                                });
                               },
                             ),
-                          ),
-                          SizedBox(
-                            width: 36,
-                            child: Text(
-                              '${(_krigingOpacity * 100).round()}%',
-                              style: const TextStyle(fontSize: 11),
+                            Icon(
+                              _isKrigingExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                              color: Colors.grey,
                             ),
+                          ],
+                        ),
+                        onExpansionChanged: (expanded) {
+                          setModalState(() {
+                            _isKrigingExpanded = expanded;
+                          });
+                        },
+                        childrenPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        children: [
+                          Row(
+                            children: [
+                              const Text("Opacity:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                              Expanded(
+                                child: Slider(
+                                  value: _krigingOpacity,
+                                  min: 0.0,
+                                  max: 1.0,
+                                  activeColor: Colors.green.shade700,
+                                  onChanged: (val) {
+                                    setModalState(() => _krigingOpacity = val);
+                                    setState(() => _krigingOpacity = val);
+                                  },
+                                ),
+                              ),
+                              SizedBox(
+                                width: 36,
+                                child: Text(
+                                  '${(_krigingOpacity * 100).round()}%',
+                                  style: const TextStyle(fontSize: 11),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+
+                      // --- Field Observations ---
+                      ExpansionTile(
+                        tilePadding: const EdgeInsets.only(left: 16, right: 8),
+                        title: const Text("Field Observations", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                        leading: Icon(Icons.person_pin_circle, color: _showObservations ? Colors.blue.shade700 : Colors.grey),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Switch(
+                              value: _showObservations,
+                              activeTrackColor: Colors.blue.shade700,
+                              onChanged: (val) {
+                                setModalState(() {
+                                  _showObservations = val;
+                                });
+                                setState(() {
+                                  _showObservations = val;
+                                });
+                                if (val && _observationsData.isEmpty) {
+                                  _fetchObservations();
+                                }
+                              },
+                            ),
+                            Icon(
+                              _isObservationsExpanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
+                              color: Colors.grey,
+                            ),
+                          ],
+                        ),
+                        onExpansionChanged: (expanded) {
+                          setModalState(() {
+                            _isObservationsExpanded = expanded;
+                          });
+                        },
+                        childrenPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        children: [
+                          const Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text("Filter by Verification:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          ),
+                          const SizedBox(height: 4),
+                          DropdownButton<String>(
+                            isExpanded: true,
+                            value: _selectedObservationVerification,
+                            items: _availableVerificationStatuses.map((stat) {
+                              return DropdownMenuItem(
+                                value: stat,
+                                child: Text(stat, style: const TextStyle(fontSize: 12)),
+                              );
+                            }).toList(),
+                            onChanged: (val) {
+                              if (val != null) {
+                                setModalState(() => _selectedObservationVerification = val);
+                                setState(() => _selectedObservationVerification = val);
+                              }
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          const Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text("Filter by User Role:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          ),
+                          const SizedBox(height: 4),
+                          DropdownButton<String>(
+                            isExpanded: true,
+                            value: _selectedObservationUserRole,
+                            items: _availableUserRoles.map((role) {
+                              return DropdownMenuItem(
+                                value: role,
+                                child: Text(role, style: const TextStyle(fontSize: 12)),
+                              );
+                            }).toList(),
+                            onChanged: (val) {
+                              if (val != null) {
+                                setModalState(() => _selectedObservationUserRole = val);
+                                setState(() => _selectedObservationUserRole = val);
+                              }
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          const Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text("Filter by Province:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          ),
+                          const SizedBox(height: 4),
+                          DropdownButton<String>(
+                            isExpanded: true,
+                            value: _selectedObservationProvince,
+                            items: _buildProvinceDropdownItems(),
+                            selectedItemBuilder: _buildProvinceSelectedItems,
+                            onChanged: (val) {
+                              if (val != null) {
+                                setModalState(() => _selectedObservationProvince = val);
+                                setState(() => _selectedObservationProvince = val);
+                              }
+                            },
+                          ),
+                          const SizedBox(height: 12),
+                          const Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text("Filter by Date Interval:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          ),
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: OutlinedButton(
+                                  style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 4), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4))),
+                                  onPressed: () async {
+                                    final date = await showDatePicker(
+                                      context: context,
+                                      initialDate: _observationStartDate ?? DateTime.now(),
+                                      firstDate: DateTime(2000),
+                                      lastDate: DateTime.now(),
+                                    );
+                                    if (date != null) {
+                                      setModalState(() => _observationStartDate = date);
+                                      setState(() => _observationStartDate = date);
+                                    }
+                                  },
+                                  child: Text(_observationStartDate != null ? _observationStartDate!.toString().split(' ')[0] : 'Start Date', style: const TextStyle(fontSize: 11)),
+                                ),
+                              ),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: OutlinedButton(
+                                  style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 4), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4))),
+                                  onPressed: () async {
+                                    final date = await showDatePicker(
+                                      context: context,
+                                      initialDate: _observationEndDate ?? DateTime.now(),
+                                      firstDate: DateTime(2000),
+                                      lastDate: DateTime.now(),
+                                    );
+                                    if (date != null) {
+                                      setModalState(() => _observationEndDate = date);
+                                      setState(() => _observationEndDate = date);
+                                    }
+                                  },
+                                  child: Text(_observationEndDate != null ? _observationEndDate!.toString().split(' ')[0] : 'End Date', style: const TextStyle(fontSize: 11)),
+                                ),
+                              ),
+                              if (_observationStartDate != null || _observationEndDate != null) ...[
+                                const SizedBox(width: 4),
+                                IconButton(
+                                  icon: const Icon(Icons.clear, size: 16),
+                                  onPressed: () {
+                                    setModalState(() { _observationStartDate = null; _observationEndDate = null; });
+                                    setState(() { _observationStartDate = null; _observationEndDate = null; });
+                                  },
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(),
+                                ),
+                              ],
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          SwitchListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text("My Observations Only", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            value: _showMyObservationsOnly,
+                            onChanged: (val) {
+                              setModalState(() => _showMyObservationsOnly = val);
+                              setState(() => _showMyObservationsOnly = val);
+                            },
                           ),
                         ],
                       ),
@@ -1111,6 +1956,33 @@ class _MapPageState extends State<MapPage> {
                               },
                             ),
                           ),
+
+                        // Observation markers with clustering
+                        if (_showObservations && _observationsData.isNotEmpty)
+                          MarkerClusterLayerWidget(
+                            options: MarkerClusterLayerOptions(
+                              maxClusterRadius: 45,
+                              size: const Size(40, 40),
+                              alignment: Alignment.center,
+                              padding: const EdgeInsets.all(50),
+                              maxZoom: 15,
+                              markers: _buildObservationMarkers(),
+                              builder: (context, markers) {
+                                return Container(
+                                  decoration: BoxDecoration(
+                                    borderRadius: BorderRadius.circular(20),
+                                    color: Colors.blue.shade700,
+                                  ),
+                                  child: Center(
+                                    child: Text(
+                                      markers.length.toString(),
+                                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
                       ],
                     ),
 
@@ -1290,12 +2162,12 @@ class _MapPageState extends State<MapPage> {
                                       _isLoading
                                           ? "Loading boundary map..."
                                           : (_isCaLoading && _isKrigingLoading)
-                                              ? "Fetching simulation layers..."
+                                              ? "Loading simulation layers..."
                                               : _isCaLoading
-                                                  ? "Fetching CA forecast..."
+                                                  ? "Loading gall rust spread forecast..."
                                                   : _isKrigingLoading
-                                                      ? "Fetching Kriging contours..."
-                                                      : "Fetching plantation data...",
+                                                      ? "Loading gall rust mapper..."
+                                                      : "Loading plantation points...",
                                       style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
                                     ),
                                   ),
