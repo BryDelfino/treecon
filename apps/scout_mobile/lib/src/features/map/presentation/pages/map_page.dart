@@ -1,15 +1,18 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle, SystemNavigator;
+import 'package:flutter/foundation.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_marker_cluster/flutter_map_marker_cluster.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:http/http.dart' as http;
-import 'package:flutter/foundation.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_services/shared_services.dart';
 import 'package:scout_mobile/src/core/services/network_service.dart';
+import 'package:scout_mobile/src/features/observations/presentation/pages/observation_details_page.dart';
 
 class MapPage extends StatefulWidget {
   const MapPage({super.key});
@@ -652,12 +655,18 @@ class _MapPageState extends State<MapPage> {
     try {
       final response = await Supabase.instance.client
           .from('observations')
-          .select('*, users!observations_user_id_fkey(user_name, role, avatar_url)')
+          .select('*, users!observations_user_id_fkey(user_name, role, avatar_url), verifier:users!observations_verifier_id_fkey(user_name)')
           .order('observation_timestamp', ascending: false);
 
       if (mounted) {
+        final currentUserId = Supabase.instance.client.auth.currentUser?.id;
+        final rawData = List<Map<String, dynamic>>.from(response);
         setState(() {
-          _observationsData = List<Map<String, dynamic>>.from(response);
+          _observationsData = rawData.where((obs) {
+            if (obs['is_deleted'] == true) return false;
+            if (obs['under_verification'] == true && obs['user_id'] != currentUserId) return false;
+            return true;
+          }).toList();
         });
       }
       debugPrint('[OBS] fetched ${_observationsData.length} observations');
@@ -823,6 +832,14 @@ class _MapPageState extends State<MapPage> {
     final avatarUrl = obs['users'] != null && obs['users'] is Map
         ? (obs['users'] as Map)['avatar_url']?.toString()
         : null;
+    
+    final verifierName = obs['verifier'] != null && obs['verifier'] is Map
+        ? (obs['verifier'] as Map)['user_name']?.toString()
+        : 'Unknown Expert';
+    final verificationDate = obs['verification_timestamp'] != null
+        ? DateTime.tryParse(obs['verification_timestamp'])?.toLocal().toString().split('.')[0] ?? 'Unknown Date'
+        : 'Unknown Date';
+    final verificationResult = obs['verification_result']?.toString();
 
     showModalBottomSheet(
       context: context,
@@ -872,6 +889,15 @@ class _MapPageState extends State<MapPage> {
                   Text(isVerified ? "Verified" : "Unverified", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: isVerified ? Colors.blue : Colors.orange)),
                 ],
               ),
+              if (isVerified) ...[
+                const SizedBox(height: 4),
+                Text("Verified by: $verifierName", style: const TextStyle(fontSize: 12, color: Colors.blue)),
+                Text("Verification Time: $verificationDate", style: const TextStyle(fontSize: 12, color: Colors.blue)),
+              ],
+              if (!isVerified && verificationResult == 'FAILED') ...[
+                const SizedBox(height: 4),
+                const Text("Verification Rejected", style: TextStyle(fontSize: 12, color: Colors.red, fontWeight: FontWeight.bold)),
+              ],
               const SizedBox(height: 4),
               Row(
                 children: [
@@ -901,8 +927,36 @@ class _MapPageState extends State<MapPage> {
               Text("$confidence%", style: const TextStyle(fontSize: 13)),
               const SizedBox(height: 8),
               const Text("Remarks", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
-              Text(remarks, style: const TextStyle(fontSize: 13)),
+              if (isVerified)
+                Text(remarks, style: const TextStyle(fontSize: 13))
+              else
+                const Text('Remarks are hidden until verified.', style: TextStyle(fontSize: 13, color: Colors.grey, fontStyle: FontStyle.italic)),
+              
               const SizedBox(height: 16),
+              
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  onPressed: () {
+                    Navigator.pop(context); // Close bottom sheet
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => ObservationDetailsPage(
+                          obs: obs,
+                          isCached: false,
+                        ),
+                      ),
+                    ).then((result) {
+                      if (result != null) {
+                        _fetchObservations();
+                      }
+                    });
+                  },
+                  icon: const Icon(Icons.info_outline),
+                  label: const Text('View Full Details'),
+                ),
+              ),
             ],
           ),
         );
