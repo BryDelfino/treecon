@@ -10,6 +10,7 @@ import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../widgets/observation_details_panel.dart';
 
 const String apiBaseUrl = String.fromEnvironment(
   'PYTHON_API_URL',
@@ -896,7 +897,7 @@ class _MapPageState extends State<MapPage> {
 
       final response = await Supabase.instance.client
           .from('observations')
-          .select('*, users!observations_user_id_fkey(user_name, role, avatar_url)')
+          .select('*, users!observations_user_id_fkey(user_name, role, avatar_url), verifier:users!observations_verifier_id_fkey(user_name)')
           .order('observation_timestamp', ascending: false);
 
       debugPrint('[OBS] Raw response type: ${response.runtimeType}');
@@ -912,8 +913,13 @@ class _MapPageState extends State<MapPage> {
         debugPrint('[OBS] Parsed coordinates: $parsed');
       }
 
+      final rawData = List<Map<String, dynamic>>.from(response);
       setState(() {
-        _observationsData = List<Map<String, dynamic>>.from(response);
+        _observationsData = rawData.where((obs) {
+          if (obs['is_deleted'] == true) return false;
+          if (obs['under_verification'] == true) return false;
+          return true;
+        }).toList();
       });
       debugPrint('[OBS] _observationsData length after setState: ${_observationsData.length}');
     } catch (e, stackTrace) {
@@ -1287,116 +1293,6 @@ class _MapPageState extends State<MapPage> {
     }).toList();
   }
 
-  Widget _buildObservationInfoWindow(Map<String, dynamic> obs) {
-    final coords = _parseCoordinates(obs['coordinates']);
-    final lat = coords?['lat'] ?? 0.0;
-    final lng = coords?['lng'] ?? 0.0;
-    final isOwner = obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
-    final province = _getProvinceForObservation(LatLng(lat, lng));
-    final isVerified = obs['is_verified'] == true || obs['sync_status'] == 'verified';
-    final date = obs['observation_timestamp'] != null 
-        ? DateTime.tryParse(obs['observation_timestamp'])?.toLocal().toString().split('.')[0] ?? 'Unknown Date'
-        : 'Unknown Date';
-    final imageUrl = obs['image_url']?.toString();
-
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        Card(
-          elevation: 6,
-          color: Colors.white,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          child: Padding(
-            padding: const EdgeInsets.all(12.0),
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text("Field Observation", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                      MouseRegion(
-                        cursor: SystemMouseCursors.click,
-                        child: GestureDetector(
-                          onTap: () => setState(() => _selectedObservation = null),
-                          child: const Icon(Icons.close, size: 16, color: Colors.grey),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const Divider(),
-                  if (imageUrl != null && imageUrl.isNotEmpty) ...[
-                    ClipRRect(
-                      borderRadius: BorderRadius.circular(8),
-                      child: Image.network(imageUrl, height: 120, width: double.infinity, fit: BoxFit.cover,
-                        errorBuilder: (context, error, stackTrace) => const SizedBox(height: 120, child: Center(child: Icon(Icons.broken_image, color: Colors.grey))),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                  ],
-                  Row(
-                    children: [
-                      Icon(isVerified ? Icons.verified : Icons.pending, size: 16, color: isVerified ? Colors.blue : Colors.orange),
-                      const SizedBox(width: 4),
-                      Text(isVerified ? "Verified" : "Unverified", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: isVerified ? Colors.blue : Colors.orange)),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  Builder(
-                    builder: (context) {
-                      final contributorName = obs['users'] != null && obs['users'] is Map
-                          ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
-                          : 'Unknown User';
-                      final role = obs['users'] != null && obs['users'] is Map
-                          ? (obs['users'] as Map)['role']?.toString().toUpperCase()
-                          : null;
-                      final isExpert = role == 'EXPERT';
-                      final avatarUrl = obs['users'] != null && obs['users'] is Map
-                          ? (obs['users'] as Map)['avatar_url']?.toString()
-                          : null;
-                      return Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          if (avatarUrl != null && avatarUrl.isNotEmpty)
-                            CircleAvatar(radius: 8, backgroundImage: NetworkImage(avatarUrl))
-                          else
-                            const Icon(Icons.person, size: 14, color: Colors.grey),
-                          const SizedBox(width: 4),
-                          Text(contributorName, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                          if (isExpert) ...[
-                            const SizedBox(width: 4),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                              decoration: BoxDecoration(color: Colors.blue.shade100, borderRadius: BorderRadius.circular(4)),
-                              child: Text('EXPERT', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.blue.shade900)),
-                            ),
-                          ],
-                        ],
-                      );
-                    }
-                  ),
-                  const SizedBox(height: 4),
-                  Text("Date: $date", style: const TextStyle(fontSize: 12)),
-                  Text("Province: $province", style: const TextStyle(fontSize: 12)),
-                  if (isOwner)
-                    Text("Lat/Lng: ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}", style: const TextStyle(fontSize: 12)),
-                  const SizedBox(height: 8),
-                  const Text("Confidence Score", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey)),
-                  Text("${obs['confidence_score'] ?? 'N/A'}%", style: const TextStyle(fontSize: 12)),
-                  const SizedBox(height: 8),
-                  const Text("Remarks", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey)),
-                  Text(obs['remarks'] ?? 'No remarks provided.', style: const TextStyle(fontSize: 12)),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
   // Fetches Kriging Contours from Python server
   Future<void> _fetchKriging(String datasetUrl) async {
     setState(() {
@@ -1727,26 +1623,6 @@ class _MapPageState extends State<MapPage> {
                     },
                   ),
                 ),
-              
-              // Observation Popup
-              if (_selectedObservation != null)
-                Builder(builder: (context) {
-                  final obsCoords = _parseCoordinates(_selectedObservation!['coordinates']);
-                  return MarkerLayer(
-                    markers: [
-                      Marker(
-                        point: LatLng(
-                          obsCoords?['lat'] ?? 0.0,
-                          obsCoords?['lng'] ?? 0.0,
-                        ),
-                        width: 250,
-                        height: 380,
-                        alignment: Alignment.topCenter,
-                        child: _buildObservationInfoWindow(_selectedObservation!),
-                      )
-                    ],
-                  );
-                }),
               
               // Map Overlay Controls
               Positioned(
@@ -2603,6 +2479,21 @@ class _MapPageState extends State<MapPage> {
           ],
         ),
           
+          if (_selectedObservation != null)
+            ObservationDetailsPanel(
+              obs: _selectedObservation!,
+              onClose: () => setState(() => _selectedObservation = null),
+              onDelete: () async {
+                final id = _selectedObservation!['observation_id'];
+                await Supabase.instance.client
+                    .from('observations')
+                    .update({'is_deleted': true})
+                    .eq('observation_id', id);
+                setState(() => _selectedObservation = null);
+                _fetchObservations();
+              },
+            ),
+            
           // Right Notch Toggle Button
           AnimatedPositioned(
             duration: const Duration(milliseconds: 300),
