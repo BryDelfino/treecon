@@ -2477,10 +2477,10 @@ class _MapPageState extends State<MapPage> {
                               items: _availableUserRoles.map((role) {
                                 return DropdownMenuItem(
                                   value: role,
-                                  child: Text(role, style: const TextStyle(fontSize: 12)),
+                                  child: Text(role, style: TextStyle(fontSize: 12, color: _showMyObservationsOnly ? Colors.grey : Colors.black87)),
                                 );
                               }).toList(),
-                                onChanged: (val) {
+                                onChanged: _showMyObservationsOnly ? null : (val) {
                                   if (val != null) {
                                     setState(() {
                                       _selectedObservationUserRole = val;
@@ -2583,6 +2583,7 @@ class _MapPageState extends State<MapPage> {
                               onChanged: (val) {
                                 setState(() {
                                   _showMyObservationsOnly = val;
+                                  if (val) _selectedObservationUserRole = 'All';
                                   _selectedObservation = null;
                                 });
                               },
