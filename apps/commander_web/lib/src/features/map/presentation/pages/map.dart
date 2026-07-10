@@ -11,6 +11,11 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+const String apiBaseUrl = String.fromEnvironment(
+  'PYTHON_API_URL',
+  defaultValue: 'http://127.0.0.1:8000',
+);
+
 class MapPage extends StatefulWidget {
   const MapPage({super.key});
 
@@ -205,6 +210,14 @@ class _MapPageState extends State<MapPage> {
     if (value < 50.0) return "Moderate";
     if (value < 75.0) return "High";
     return "Severe";
+  }
+
+  Color _getSeverityColor(double value) {
+    if (value < 10.0) return Colors.green.shade700;
+    if (value < 25.0) return Colors.yellow.shade800;
+    if (value < 50.0) return Colors.orange;
+    if (value < 75.0) return Colors.deepOrange;
+    return Colors.red;
   }
 
   bool _isPointInPolygon(LatLng point, List<LatLng> polygon) {
@@ -722,7 +735,7 @@ class _MapPageState extends State<MapPage> {
 
       final request = http.MultipartRequest(
         'POST',
-        Uri.parse('http://127.0.0.1:8000/api/datasets/process'),
+        Uri.parse('$apiBaseUrl/api/datasets/process'),
       );
       request.files.add(http.MultipartFile.fromBytes(
         'file',
@@ -805,7 +818,7 @@ class _MapPageState extends State<MapPage> {
           _krigingPolygons.clear();
           _plantationsData.clear();
           // Ensure it's in the list if _fetchDatasets missed it due to replication lag
-          if (!_availableDatasets.any((d) => d['id'] == newDataset['id'])) {
+          if (!_availableDatasets.any((d) => d['raw_filepath'] == newDataset['raw_filepath'])) {
             _availableDatasets.insert(0, newDataset);
           }
         });
@@ -822,6 +835,58 @@ class _MapPageState extends State<MapPage> {
       _showToast('Error uploading: $e');
     } finally {
       if (mounted) setState(() => _isUploadingDataset = false);
+    }
+  }
+
+  Future<void> _deleteDataset(Map<String, dynamic> dataset) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Dataset'),
+        content: Text('Are you sure you want to delete "${dataset['filename']}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    try {
+      _showToast('Deleting dataset...', isError: false);
+      
+      // Soft-delete database row using a secure RPC to bypass RLS check quirks
+      await Supabase.instance.client
+          .rpc('soft_delete_dataset', params: {'filepath': dataset['raw_filepath']});
+
+      setState(() {
+        _availableDatasets.removeWhere((d) => d['raw_filepath'] == dataset['raw_filepath']);
+        if (_selectedDataset != null && _selectedDataset!['raw_filepath'] == dataset['raw_filepath']) {
+          _selectedDataset = null;
+          _showCA = false;
+          _showKriging = false;
+          _showPlantations = false;
+          _caPolygons.clear();
+          _krigingPolygons.clear();
+          _plantationsData.clear();
+          _selectedRegionProps = null;
+          _selectedRegionLocation = null;
+          _selectedPlantation = null;
+          _selectedObservation = null;
+        }
+      });
+      _showToast('Dataset deleted successfully.', isError: false);
+    } catch (e) {
+      debugPrint('Delete error: $e');
+      _showToast('Failed to delete: $e', isError: true);
     }
   }
 
@@ -929,18 +994,18 @@ class _MapPageState extends State<MapPage> {
                 ),
                 const SizedBox(height: 8),
                 if (_showKriging) ...[
-                  const Text("Kriging Interpolation", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey)),
+                  const Text("Gall Rust Spread Mapper", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey)),
                   if (krigingSeverity != 'N/A')
-                    Text('Severity: $krigingSeverity% (${_getSeverityClass(double.tryParse(krigingSeverity) ?? 0)})', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13))
+                    Text('Severity: $krigingSeverity% (${_getSeverityClass(double.tryParse(krigingSeverity) ?? 0)})', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: _getSeverityColor(double.tryParse(krigingSeverity) ?? 0)))
                   else
                     const Text('No data available.', style: TextStyle(fontSize: 12)),
                   if (_showCA) const SizedBox(height: 8),
                 ],
                 if (_showCA) ...[
-                  const Text("CA Spread Forecast", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey)),
+                  const Text("Gall Rust Spread Forecast", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey)),
                   if (caSeverity != 'N/A') ...[
-                    Text('Before (Current): ${krigingSeverity == 'N/A' ? 'N/A' : '$krigingSeverity% (${_getSeverityClass(double.tryParse(krigingSeverity) ?? 0)})'}', style: const TextStyle(fontSize: 12)),
-                    Text('After (Step $_caSteps): $caSeverity% (${_getSeverityClass(double.tryParse(caSeverity) ?? 0)})', style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: Colors.deepOrange)),
+                    Text('Before (Current): ${krigingSeverity == 'N/A' ? 'N/A' : '$krigingSeverity% (${_getSeverityClass(double.tryParse(krigingSeverity) ?? 0)})'}', style: TextStyle(fontSize: 12, fontWeight: krigingSeverity == 'N/A' ? FontWeight.normal : FontWeight.w600, color: krigingSeverity == 'N/A' ? Colors.black87 : _getSeverityColor(double.tryParse(krigingSeverity) ?? 0))),
+                    Text('After (Step $_caSteps): $caSeverity% (${_getSeverityClass(double.tryParse(caSeverity) ?? 0)})', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: _getSeverityColor(double.tryParse(caSeverity) ?? 0))),
                   ] else
                     const Text('No data available.', style: TextStyle(fontSize: 12)),
                 ],
@@ -969,7 +1034,7 @@ class _MapPageState extends State<MapPage> {
     });
     try {
       final response = await http.get(
-        Uri.parse('http://127.0.0.1:8000/api/plantations?dataset_url=${Uri.encodeComponent(datasetUrl)}'),
+        Uri.parse('$apiBaseUrl/api/plantations?dataset_url=${Uri.encodeComponent(datasetUrl)}'),
       );
       if (response.statusCode == 200) {
         final List<dynamic> data = json.decode(response.body);
@@ -1099,13 +1164,6 @@ class _MapPageState extends State<MapPage> {
                 ),
                 Builder(
                   builder: (context) {
-                    Color getColor(double val) {
-                      if (val < 10) return Colors.green.shade700;
-                      if (val < 25) return Colors.yellow.shade800;
-                      if (val < 50) return Colors.orange;
-                      if (val < 75) return Colors.deepOrange;
-                      return Colors.red;
-                    }
 
                     final gsiStr = getValue(['gsi', 'severity_index_pct', 'GSI']);
                     final gsiVal = double.tryParse(gsiStr) ?? 0.0;
@@ -1127,7 +1185,7 @@ class _MapPageState extends State<MapPage> {
                           style: TextStyle(
                             fontSize: 12, 
                             fontWeight: isGsiValid ? FontWeight.bold : FontWeight.normal,
-                            color: isGsiValid ? getColor(gsiVal) : Colors.black87
+                            color: isGsiValid ? _getSeverityColor(gsiVal) : Colors.black87
                           )
                         ),
                       ],
@@ -1137,20 +1195,13 @@ class _MapPageState extends State<MapPage> {
                 const SizedBox(height: 8),
                 if (_showCA) ...[
                   const Divider(),
-                  const Text("CA Spread Forecast", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey)),
+                  const Text("Gall Rust Spread Forecast", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey)),
                   Builder(builder: (context) {
                     final lat = double.tryParse(p['latitude'].toString()) ?? 0.0;
                     final lng = double.tryParse(p['longitude'].toString()) ?? 0.0;
                     final forecasted = _getCAForecastForPoint(LatLng(lat, lng));
                     if (forecasted != null) {
-                      Color getColor(double val) {
-                        if (val < 10) return Colors.green.shade700;
-                        if (val < 25) return Colors.yellow.shade800;
-                        if (val < 50) return Colors.orange;
-                        if (val < 75) return Colors.deepOrange;
-                        return Colors.red;
-                      }
-                      return Text('Forecasted GSI (Step $_caSteps): $forecasted% (${_getSeverityClass(forecasted)})', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: getColor(forecasted)));
+                      return Text('Forecasted GSI (Step $_caSteps): $forecasted% (${_getSeverityClass(forecasted)})', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: _getSeverityColor(forecasted)));
                     }
                     return const Text("No forecast available for this point.", style: TextStyle(fontSize: 12, color: Colors.grey));
                   }),
@@ -1362,7 +1413,7 @@ class _MapPageState extends State<MapPage> {
     });
     try {
       final response = await http.post(
-        Uri.parse('http://127.0.0.1:8000/api/kriging'),
+        Uri.parse('$apiBaseUrl/api/kriging'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
           'dataset_url': datasetUrl,
@@ -1392,7 +1443,7 @@ class _MapPageState extends State<MapPage> {
     });
     try {
       final response = await http.post(
-        Uri.parse('http://127.0.0.1:8000/api/forecast'),
+        Uri.parse('$apiBaseUrl/api/forecast'),
         headers: {'Content-Type': 'application/json'},
         body: json.encode({
           'dataset_url': datasetUrl,
@@ -1718,6 +1769,7 @@ class _MapPageState extends State<MapPage> {
                       child: Column(
                         children: [
                           IconButton(
+                            tooltip: 'Zoom In',
                             icon: const Icon(Icons.add, size: 20),
                             constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                             padding: EdgeInsets.zero,
@@ -1725,6 +1777,7 @@ class _MapPageState extends State<MapPage> {
                           ),
                           Container(height: 1, width: 36, color: Colors.grey.shade300),
                           IconButton(
+                            tooltip: 'Zoom Out',
                             icon: const Icon(Icons.remove, size: 20),
                             constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                             padding: EdgeInsets.zero,
@@ -1764,6 +1817,9 @@ class _MapPageState extends State<MapPage> {
                         padding: EdgeInsets.zero,
                         onPressed: () {
                           _mapController.rotate(0);
+                          setState(() {
+                            _currentRotation = 0;
+                          });
                         },
                       ),
                     ),
@@ -1772,6 +1828,7 @@ class _MapPageState extends State<MapPage> {
                     Container(
                       decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(4), boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)]),
                       child: IconButton(
+                        tooltip: _isSatellite ? 'Map View' : 'Satellite View',
                         icon: Icon(_isSatellite ? Icons.map : Icons.satellite_alt, size: 20),
                         constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                         padding: EdgeInsets.zero,
@@ -1818,9 +1875,9 @@ class _MapPageState extends State<MapPage> {
                       Text((_isCaLoading && _isKrigingLoading)
                           ? "Fetching simulation layers..."
                           : _isCaLoading
-                              ? "Fetching CA forecast..."
+                              ? "Fetching Gall Rust Spread Forecast..."
                               : _isKrigingLoading
-                                  ? "Fetching Kriging contours..."
+                                  ? "Fetching Gall Rust Spread Mapper..."
                                   : _isPlantationsLoading 
                                       ? "Loading plantation points..."
                                       : "Loading observations..."),
@@ -2015,6 +2072,10 @@ class _MapPageState extends State<MapPage> {
                                       _caPolygons.clear();
                                       _krigingPolygons.clear();
                                       _plantationsData.clear();
+                                      _selectedRegionProps = null;
+                                      _selectedRegionLocation = null;
+                                      _selectedPlantation = null;
+                                      _selectedObservation = null;
                                     });
                                   },
                                 ),
@@ -2032,7 +2093,7 @@ class _MapPageState extends State<MapPage> {
                                         itemCount: _filteredDatasets.length,
                                         itemBuilder: (context, index) {
                                           final dataset = _filteredDatasets[index];
-                                          final isSelected = _selectedDataset != null && _selectedDataset!['id'] == dataset['id'];
+                                          final isSelected = _selectedDataset != null && _selectedDataset!['raw_filepath'] == dataset['raw_filepath'];
                                           final isOwner = dataset['user_id'] == Supabase.instance.client.auth.currentUser?.id;
                                           final uploaderName = dataset['users'] != null && dataset['users'] is Map
                                               ? (dataset['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
@@ -2052,7 +2113,21 @@ class _MapPageState extends State<MapPage> {
                                               contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
                                               title: Text(dataset['filename'] ?? 'Dataset', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis),
                                               subtitle: Text('By: $uploaderName • $dateStr', style: const TextStyle(fontSize: 10)),
-                                              trailing: isOwner ? const Icon(Icons.star, size: 14, color: Colors.orange) : const Icon(Icons.public, size: 14, color: Colors.grey),
+                                              trailing: isOwner 
+                                                ? Row(
+                                                    mainAxisSize: MainAxisSize.min,
+                                                    children: [
+                                                      IconButton(
+                                                        icon: const Icon(Icons.delete_outline, size: 16, color: Colors.red),
+                                                        padding: EdgeInsets.zero,
+                                                        constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                                                        tooltip: 'Delete Dataset',
+                                                        onPressed: () => _deleteDataset(dataset),
+                                                      ),
+                                                      const Icon(Icons.star, size: 14, color: Colors.orange),
+                                                    ],
+                                                  )
+                                                : const Icon(Icons.public, size: 14, color: Colors.grey),
                                               onTap: () {
                                                 setState(() {
                                                   _selectedDataset = dataset;
@@ -2062,6 +2137,10 @@ class _MapPageState extends State<MapPage> {
                                                   _caPolygons.clear();
                                                   _krigingPolygons.clear();
                                                   _plantationsData.clear();
+                                                  _selectedRegionProps = null;
+                                                  _selectedRegionLocation = null;
+                                                  _selectedPlantation = null;
+                                                  _selectedObservation = null;
                                                 });
                                                 final path = isOwner ? dataset['raw_filepath'] : dataset['perturbed_filepath'];
                                                 final url = Supabase.instance.client.storage.from('datasets').getPublicUrl(path);
@@ -2118,7 +2197,7 @@ class _MapPageState extends State<MapPage> {
 
                           // Accordions
                         ExpansionTile(
-                          title: const Text("CA Spread Forecast", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                          title: const Text("Gall Rust Spread Forecast", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
                           leading: Icon(Icons.online_prediction, color: _showCA ? Colors.green.shade700 : Colors.grey),
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
@@ -2173,7 +2252,16 @@ class _MapPageState extends State<MapPage> {
                             Row(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                const Text("Forecast Steps:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                                Row(
+                                  children: [
+                                    const Text("Forecast Steps:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                                    const SizedBox(width: 4),
+                                    Tooltip(
+                                      message: "A 'step' represents a mathematical cycle of spread. Its exact real-world equivalent (e.g. week, month, or year) is not yet calibrated.",
+                                      child: Icon(Icons.info_outline, size: 14, color: Colors.grey.shade600),
+                                    ),
+                                  ],
+                                ),
                                 Text("Step $_caSteps", style: TextStyle(color: Colors.green.shade700, fontWeight: FontWeight.bold, fontSize: 12)),
                               ],
                             ),
@@ -2205,7 +2293,7 @@ class _MapPageState extends State<MapPage> {
                         ),
                         
                         ExpansionTile(
-                          title: const Text("Kriging Interpolation", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                          title: const Text("Gall Rust Spread Mapper", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
                           leading: Icon(Icons.grain, color: _showKriging ? Colors.green.shade700 : Colors.grey),
                           trailing: Row(
                             mainAxisSize: MainAxisSize.min,
