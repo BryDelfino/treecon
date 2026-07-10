@@ -52,8 +52,8 @@ class _MapPageState extends State<MapPage> {
 
   final List<String> _availableVerificationStatuses = ['All', 'Verified', 'Unverified'];
   final List<String> _availableUserRoles = ['All', 'Expert', 'Community'];
-  bool _showObservations = true;
-  bool _isObservationsExpanded = true;
+  bool _showObservations = false;
+  bool _isObservationsExpanded = false;
   bool _isObservationsLoading = false;
   bool _isControlsCollapsed = false;
   List<Map<String, dynamic>> _observationsData = [];
@@ -90,7 +90,6 @@ class _MapPageState extends State<MapPage> {
   bool _isUploadingDataset = false;
   List<Map<String, dynamic>> _availableDatasets = [];
   Map<String, dynamic>? _selectedDataset;
-  String _datasetUserRoleFilter = 'All';
   DateTime? _datasetStartDate;
   DateTime? _datasetEndDate;
   bool _showMyDatasetsOnly = false;
@@ -103,14 +102,6 @@ class _MapPageState extends State<MapPage> {
         if (currentUserId != null && ds['user_id'] != currentUserId) {
           return false;
         }
-      }
-
-      if (_datasetUserRoleFilter != 'All') {
-        final role = ds['users'] != null && ds['users'] is Map
-            ? (ds['users'] as Map)['role']?.toString().toUpperCase()
-            : null;
-        if (_datasetUserRoleFilter == 'Expert' && role != 'EXPERT') return false;
-        if (_datasetUserRoleFilter == 'Community' && role == 'EXPERT') return false;
       }
       if (_datasetVisibilityFilter != 'All') {
         final isPublic = ds['is_public'] == true;
@@ -1976,26 +1967,6 @@ class _MapPageState extends State<MapPage> {
                                         child: DropdownButton<String>(
                                           isExpanded: true,
                                           underline: const SizedBox(),
-                                          value: _datasetUserRoleFilter,
-                                          items: _availableUserRoles.map((r) => DropdownMenuItem(value: r, child: Text(r, style: const TextStyle(fontSize: 11)))).toList(),
-                                          onChanged: (val) {
-                                            if (val != null) setState(() => _datasetUserRoleFilter = val);
-                                          },
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 4),
-                                    Expanded(
-                                      child: Container(
-                                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                                        decoration: BoxDecoration(
-                                          border: Border.all(color: Colors.grey),
-                                          borderRadius: BorderRadius.circular(4),
-                                          color: Colors.white,
-                                        ),
-                                        child: DropdownButton<String>(
-                                          isExpanded: true,
-                                          underline: const SizedBox(),
                                           value: _datasetVisibilityFilter,
                                           items: ['All', 'Public', 'Private'].map((v) => DropdownMenuItem(value: v, child: Text(v, style: const TextStyle(fontSize: 11)))).toList(),
                                           onChanged: (val) {
@@ -2111,7 +2082,24 @@ class _MapPageState extends State<MapPage> {
                                             child: ListTile(
                                               dense: true,
                                               contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0),
-                                              title: Text(dataset['filename'] ?? 'Dataset', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis),
+                                              title: Row(
+                                                children: [
+                                                  Expanded(child: Text(dataset['filename'] ?? 'Dataset', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)),
+                                                  const SizedBox(width: 4),
+                                                  Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                                    decoration: BoxDecoration(
+                                                      color: dataset['is_public'] == true ? Colors.green.shade50 : Colors.grey.shade100,
+                                                      borderRadius: BorderRadius.circular(4),
+                                                      border: Border.all(color: dataset['is_public'] == true ? Colors.green.shade200 : Colors.grey.shade300),
+                                                    ),
+                                                    child: Text(
+                                                      dataset['is_public'] == true ? 'Public' : 'Private',
+                                                      style: TextStyle(fontSize: 9, color: dataset['is_public'] == true ? Colors.green.shade700 : Colors.grey.shade700, fontWeight: FontWeight.bold),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
                                               subtitle: Text('By: $uploaderName • $dateStr', style: const TextStyle(fontSize: 10)),
                                               trailing: isOwner 
                                                 ? Row(
