@@ -7,6 +7,7 @@ import 'package:shared_services/shared_services.dart';
 import 'package:scout_mobile/src/core/services/network_service.dart';
 import '../../data/observation_local_db.dart';
 import 'add_observation_page.dart';
+import 'observation_details_page.dart';
 
 class ObservationPage extends StatefulWidget {
   const ObservationPage({super.key});
@@ -802,8 +803,29 @@ class _ObservationPageState extends State<ObservationPage> {
       ),
       margin: const EdgeInsets.only(bottom: 12.0),
       color: Colors.white,
-      child: IntrinsicHeight(
-        child: Row(
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16.0),
+        onTap: () async {
+          final result = await Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => ObservationDetailsPage(
+                obs: obs,
+                isCached: isLocal,
+              ),
+            ),
+          );
+          if (result == 'UPLOAD' && isLocal) {
+            _syncSingleObservation(observationId);
+          } else if (result == 'DELETE' && isLocal) {
+            await ObservationLocalDb.instance.deleteObservation(observationId);
+            _fetchObservations();
+          } else if (result == 'DELETED_SYSTEM' || result == 'VERIFICATION_REQUESTED') {
+            _fetchObservations();
+          }
+        },
+        child: IntrinsicHeight(
+          child: Row(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // Color indicator border
@@ -924,6 +946,7 @@ class _ObservationPageState extends State<ObservationPage> {
               ),
           ],
         ),
+      ),
       ),
     );
   }
