@@ -106,6 +106,8 @@ class _MapPageState extends State<MapPage> {
   final List<String> _availableVerificationStatuses = ['All', 'Verified', 'Unverified'];
   final List<String> _availableUserRoles = ['All', 'Expert', 'Community'];
 
+  Map<String, dynamic>? _selectedRegionProps;
+
   StreamSubscription<bool>? _networkSub;
 
   @override
@@ -459,6 +461,117 @@ class _MapPageState extends State<MapPage> {
     }
   }
 
+
+  List<Polygon> _getHighlightedPolygons() {
+    if (_selectedRegionProps == null) return [];
+    final selectedName = _selectedRegionProps!['adm2_name'] ?? _selectedRegionProps!['adm3_name'];
+    if (selectedName == null) return [];
+
+    final List<Polygon> activePolygons = _showCA ? _caPolygons : (_showKriging ? _krigingPolygons : []);
+    if (activePolygons.isEmpty) return [];
+
+    final List<Polygon> highlights = [];
+    for (var p in activePolygons) {
+      final props = p.hitValue as Map<String, dynamic>?;
+      if (props != null) {
+        final name = props['adm2_name'] ?? props['adm3_name'];
+        if (name == selectedName) {
+          highlights.add(Polygon(
+            points: p.points,
+            color: Colors.transparent,
+            borderColor: Colors.yellowAccent,
+            borderStrokeWidth: 4.0,
+          ));
+        }
+      }
+    }
+    return highlights;
+  }
+
+  Future<void> _showRegionInfoSheet(Map<String, dynamic> properties) async {
+    final name = properties['adm2_name'] ?? properties['adm3_name'] ?? 'Unknown Region';
+    
+    // Find matching properties in Kriging and CA datasets
+    Map<String, dynamic>? krigingProps;
+    Map<String, dynamic>? caProps;
+
+    for (var p in _krigingPolygons) {
+      final props = p.hitValue as Map<String, dynamic>?;
+      if (props != null && (props['adm2_name'] == name || props['adm3_name'] == name)) {
+        krigingProps = props;
+        break;
+      }
+    }
+
+    for (var p in _caPolygons) {
+      final props = p.hitValue as Map<String, dynamic>?;
+      if (props != null && (props['adm2_name'] == name || props['adm3_name'] == name)) {
+        caProps = props;
+        break;
+      }
+    }
+
+    final krigingSeverity = krigingProps?['severity_value']?.toString() ?? 'N/A';
+    final caSeverity = caProps?['severity_value']?.toString() ?? 'N/A';
+
+    return showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24.0)),
+      ),
+      builder: (context) {
+        return Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(bottom: 16),
+                  decoration: BoxDecoration(
+                    color: Colors.grey[300],
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              Row(
+                children: [
+                  const Icon(Icons.location_on, color: Colors.green),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(name, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16), overflow: TextOverflow.ellipsis),
+                  ),
+                ],
+              ),
+              const Divider(height: 20),
+              if (_showKriging) ...[
+                const Text("Gall Rust Spread Mapper", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+                if (krigingSeverity != 'N/A')
+                  Text('Severity: $krigingSeverity% (${_getSeverityClass(double.tryParse(krigingSeverity) ?? 0)})', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: _getSeverityColor(double.tryParse(krigingSeverity) ?? 0)))
+                else
+                  const Text('No data available.', style: TextStyle(fontSize: 13)),
+                if (_showCA) const SizedBox(height: 12),
+              ],
+              if (_showCA) ...[
+                const Text("Gall Rust Spread Forecast", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+                if (caSeverity != 'N/A') ...[
+                  Text('Before (Current): ${krigingSeverity == 'N/A' ? 'N/A' : '$krigingSeverity% (${_getSeverityClass(double.tryParse(krigingSeverity) ?? 0)})'}', style: TextStyle(fontSize: 13, fontWeight: krigingSeverity == 'N/A' ? FontWeight.normal : FontWeight.bold, color: krigingSeverity == 'N/A' ? Colors.black87 : _getSeverityColor(double.tryParse(krigingSeverity) ?? 0))),
+                  Text('After (Step $_caSteps): $caSeverity% (${_getSeverityClass(double.tryParse(caSeverity) ?? 0)})', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: _getSeverityColor(double.tryParse(caSeverity) ?? 0))),
+                ] else
+                  const Text('No data available.', style: TextStyle(fontSize: 13)),
+              ],
+              const SizedBox(height: 16),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   // --- Plantation Fetching ---
   Future<void> _fetchPlantations(String datasetUrl) async {
     setState(() => _isPlantationsLoading = true);
@@ -773,21 +886,16 @@ class _MapPageState extends State<MapPage> {
                 ],
               ),
               const SizedBox(height: 4),
+              Text("Timestamp: $date", style: const TextStyle(fontSize: 13)),
               Text("Province: $province", style: const TextStyle(fontSize: 13)),
-              Text("Date: $date", style: const TextStyle(fontSize: 13)),
               if (isOwner)
                 Text("Lat/Lng: ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}", style: const TextStyle(fontSize: 13)),
-              const SizedBox(height: 4),
-              Text(
-                "Confidence: $confidence%",
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                  color: (double.tryParse(confidence) ?? 0) >= 60.0 ? Colors.red : Colors.green,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text("Remarks: $remarks", style: const TextStyle(fontSize: 13)),
+              const SizedBox(height: 8),
+              const Text("Confidence Score", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+              Text("$confidence%", style: const TextStyle(fontSize: 13)),
+              const SizedBox(height: 8),
+              const Text("Remarks", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+              Text(remarks, style: const TextStyle(fontSize: 13)),
               const SizedBox(height: 16),
             ],
           ),
@@ -1523,10 +1631,10 @@ class _MapPageState extends State<MapPage> {
                             items: _availableUserRoles.map((role) {
                               return DropdownMenuItem(
                                 value: role,
-                                child: Text(role, style: const TextStyle(fontSize: 12)),
+                                child: Text(role, style: TextStyle(fontSize: 12, color: _showMyObservationsOnly ? Colors.grey : Colors.black87)),
                               );
                             }).toList(),
-                            onChanged: (val) {
+                            onChanged: _showMyObservationsOnly ? null : (val) {
                               if (val != null) {
                                 setModalState(() => _selectedObservationUserRole = val);
                                 setState(() => _selectedObservationUserRole = val);
@@ -1616,8 +1724,14 @@ class _MapPageState extends State<MapPage> {
                             title: const Text("My Observations Only", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                             value: _showMyObservationsOnly,
                             onChanged: (val) {
-                              setModalState(() => _showMyObservationsOnly = val);
-                              setState(() => _showMyObservationsOnly = val);
+                              setModalState(() {
+                                _showMyObservationsOnly = val;
+                                if (val) _selectedObservationUserRole = 'All';
+                              });
+                              setState(() {
+                                _showMyObservationsOnly = val;
+                                if (val) _selectedObservationUserRole = 'All';
+                              });
                             },
                           ),
                         ],
@@ -1666,6 +1780,19 @@ class _MapPageState extends State<MapPage> {
         ],
       ),
     );
+  }
+
+  double? _getCAForecastForPoint(LatLng point) {
+    if (!_showCA || _caPolygons.isEmpty) return null;
+    for (var poly in _caPolygons) {
+      if (_isPointInPolygon(point, poly.points)) {
+        final props = poly.hitValue as Map<String, dynamic>?;
+        if (props != null) {
+          return double.tryParse(props['severity_value']?.toString() ?? '');
+        }
+      }
+    }
+    return null;
   }
 
   // --- Plantation Info Bottom Sheet ---
@@ -1740,6 +1867,25 @@ class _MapPageState extends State<MapPage> {
                   color: isGsiValid ? _getSeverityColor(gsiVal) : Colors.black87,
                 ),
               ),
+              if (_showCA) ...[
+                const Divider(height: 20),
+                const Text("Gall Rust Spread Forecast", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+                Builder(builder: (context) {
+                  final lat = double.tryParse(p['latitude'].toString()) ?? 0.0;
+                  final lng = double.tryParse(p['longitude'].toString()) ?? 0.0;
+                  final forecasted = _getCAForecastForPoint(LatLng(lat, lng));
+                  if (forecasted != null) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Before (Current): ${isGsiValid ? '$gsiStr% (${_getSeverityClass(gsiVal)})' : 'N/A'}', style: TextStyle(fontSize: 13, fontWeight: isGsiValid ? FontWeight.bold : FontWeight.normal, color: isGsiValid ? _getSeverityColor(gsiVal) : Colors.black87)),
+                        Text('After (Step $_caSteps): $forecasted% (${_getSeverityClass(forecasted)})', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: _getSeverityColor(forecasted))),
+                      ],
+                    );
+                  }
+                  return const Text("No forecast available for this point.", style: TextStyle(fontSize: 13, color: Colors.grey));
+                }),
+              ],
               const SizedBox(height: 16),
             ],
           ),
@@ -1911,6 +2057,34 @@ class _MapPageState extends State<MapPage> {
                             _mapCenter = camera.center;
                           });
                         },
+                        onTap: (tapPosition, point) {
+                          final List<Polygon> activePolygons = _showCA ? _caPolygons : (_showKriging ? _krigingPolygons : []);
+                          bool found = false;
+                          for (var poly in activePolygons) {
+                            if (_isPointInPolygon(point, poly.points)) {
+                              final props = poly.hitValue as Map<String, dynamic>?;
+                              if (props != null) {
+                                setState(() {
+                                  _selectedRegionProps = props;
+                                });
+                                _showRegionInfoSheet(props).whenComplete(() {
+                                  if (mounted) {
+                                    setState(() {
+                                      _selectedRegionProps = null;
+                                    });
+                                  }
+                                });
+                                found = true;
+                                break;
+                              }
+                            }
+                          }
+                          if (!found && _selectedRegionProps != null) {
+                            setState(() {
+                              _selectedRegionProps = null;
+                            });
+                          }
+                        },
                       ),
                       children: [
                         TileLayer(
@@ -1928,6 +2102,14 @@ class _MapPageState extends State<MapPage> {
                         if (_showKriging && _krigingPolygons.isNotEmpty)
                           PolygonLayer(
                             polygons: _applyOpacity(_krigingPolygons, _krigingOpacity),
+                          ),
+
+
+
+                        // Highlight layer
+                        if (_selectedRegionProps != null)
+                          PolygonLayer(
+                            polygons: _getHighlightedPolygons(),
                           ),
 
                         // Plantation markers with clustering
@@ -1970,7 +2152,9 @@ class _MapPageState extends State<MapPage> {
                               builder: (context, markers) {
                                 return Container(
                                   decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(20),
+                                    shape: BoxShape.rectangle,
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: Colors.white, width: 2),
                                     color: Colors.blue.shade700,
                                   ),
                                   child: Center(
