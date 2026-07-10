@@ -820,6 +820,9 @@ class _MapPageState extends State<MapPage> {
         ? (obs['users'] as Map)['role']?.toString().toUpperCase()
         : null;
     final isExpert = role == 'EXPERT';
+    final avatarUrl = obs['users'] != null && obs['users'] is Map
+        ? (obs['users'] as Map)['avatar_url']?.toString()
+        : null;
 
     showModalBottomSheet(
       context: context,
@@ -872,7 +875,10 @@ class _MapPageState extends State<MapPage> {
               const SizedBox(height: 4),
               Row(
                 children: [
-                  const Icon(Icons.person, size: 14, color: Colors.grey),
+                  if (avatarUrl != null && avatarUrl.isNotEmpty)
+                    CircleAvatar(radius: 8, backgroundImage: NetworkImage(avatarUrl))
+                  else
+                    const Icon(Icons.person, size: 14, color: Colors.grey),
                   const SizedBox(width: 4),
                   Text(contributorName, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
                   if (isExpert) ...[
