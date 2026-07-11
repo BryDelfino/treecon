@@ -843,12 +843,15 @@ class _MapPageState extends State<MapPage> {
 
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24.0)),
       ),
       builder: (context) {
-        return Padding(
+        return SafeArea(
+          child: SingleChildScrollView(
+            child: Padding(
           padding: const EdgeInsets.all(24.0),
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -958,6 +961,8 @@ class _MapPageState extends State<MapPage> {
                 ),
               ),
             ],
+          ),
+            ),
           ),
         );
       },
