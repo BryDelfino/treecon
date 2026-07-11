@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:typed_data';
 import 'package:shared_services/shared_services.dart';
+import 'observation_details_page.dart';
 
 class ObservationsListPage extends StatefulWidget {
   final bool isExpertOnly;
@@ -15,6 +16,7 @@ class ObservationsListPage extends StatefulWidget {
 }
 
 class _ObservationsListPageState extends State<ObservationsListPage> {
+  RealtimeChannel? _subscription;
   List<Map<String, dynamic>> _observations = [];
   bool _isLoading = true;
   String? _error;
@@ -37,6 +39,80 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
   void initState() {
     super.initState();
     _fetchObservations(resetPage: true);
+    _setupRealtime();
+  }
+
+  void _setupRealtime() {
+    if (widget.isExpertOnly) return; // Only notify global queue viewers
+
+    _subscription = Supabase.instance.client
+        .channel('public:observations')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.update,
+          schema: 'public',
+          table: 'observations',
+          callback: (payload) {
+            final newRow = payload.newRecord;
+            if (newRow['under_verification'] == true && newRow['verification_result'] == 'PENDING') {
+              if (mounted) {
+                ScaffoldMessenger.of(context).clearSnackBars();
+                final screenWidth = MediaQuery.of(context).size.width;
+                final leftMargin = screenWidth > 400 ? screenWidth - 360.0 : 16.0;
+
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Row(
+                      children: [
+                        const Icon(
+                          Icons.notifications_active_outlined,
+                          color: Colors.white,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 12.0),
+                        const Expanded(
+                          child: Text(
+                            'A new observation has been queued for verification!',
+                            style: TextStyle(fontWeight: FontWeight.w500, color: Colors.white),
+                          ),
+                        ),
+                        const SizedBox(width: 8.0),
+                        IconButton(
+                          icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 18),
+                          onPressed: () {
+                            ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                          },
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                          splashRadius: 16.0,
+                        ),
+                      ],
+                    ),
+                    backgroundColor: Colors.blue[800],
+                    behavior: SnackBarBehavior.floating,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10.0),
+                    ),
+                    margin: EdgeInsets.only(
+                      bottom: 24,
+                      right: 16,
+                      left: leftMargin,
+                    ),
+                    duration: const Duration(seconds: 5),
+                  ),
+                );
+              }
+            }
+          },
+        )
+        .subscribe();
+  }
+
+  @override
+  void dispose() {
+    if (_subscription != null) {
+      Supabase.instance.client.removeChannel(_subscription!);
+    }
+    super.dispose();
   }
 
   @override
@@ -44,6 +120,15 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.isExpertOnly != widget.isExpertOnly) {
       _fetchObservations(resetPage: true);
+      
+      if (widget.isExpertOnly) {
+        if (_subscription != null) {
+          Supabase.instance.client.removeChannel(_subscription!);
+          _subscription = null;
+        }
+      } else {
+        _setupRealtime();
+      }
     }
   }
 
@@ -69,8 +154,11 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
 
       if (widget.isExpertOnly) {
         query = query.eq('user_id', user.id);
-      } else if (_searchUserName.isNotEmpty) {
-        query = query.ilike('users.user_name', '%$_searchUserName%');
+      } else {
+        query = query.eq('under_verification', true).eq('is_public', true);
+        if (_searchUserName.isNotEmpty) {
+          query = query.ilike('users.user_name', '%$_searchUserName%');
+        }
       }
       
       if (_filterStartDate != null) {
@@ -110,44 +198,6 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
           _error = e.toString();
           _isLoading = false;
         });
-      }
-    }
-  }
-
-  Future<void> _verifyObservation(Map<String, dynamic> obs) async {
-    final id = obs['observation_id'] ?? obs['id'];
-    if (id == null) return;
-
-    try {
-      // Try updating is_verified first. If the column doesn't exist, catch error and fallback
-      await Supabase.instance.client
-          .from('observations')
-          .update({'is_verified': true})
-          .eq('observation_id', id);
-
-      _showToast('Observation verified successfully!', isError: false);
-      _fetchObservations();
-    } catch (e) {
-      debugPrint('Error updating is_verified, trying sync_status: $e');
-      try {
-        // Fallback to updating sync_status or similar
-        await Supabase.instance.client
-            .from('observations')
-            .update({'sync_status': 'verified'})
-            .eq('observation_id', id);
-
-        _showToast('Observation verified (status updated)!', isError: false);
-        _fetchObservations();
-      } catch (e2) {
-        // Local simulation fallback
-        setState(() {
-          final index = _observations.indexWhere((element) => (element['observation_id'] ?? element['id']) == id);
-          if (index != -1) {
-            _observations[index]['is_verified'] = true;
-            _observations[index]['sync_status'] = 'verified';
-          }
-        });
-        _showToast('Verified (local simulation mode)', isError: false);
       }
     }
   }
@@ -230,20 +280,6 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
       default:
         return Colors.grey;
     }
-  }
-
-  void _showToast(String message, {bool isError = true}) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).clearSnackBars();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: isError ? Colors.red[800] : Colors.green[800],
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        width: 400,
-      ),
-    );
   }
 
   void _showFilterModal() {
@@ -443,6 +479,12 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
             onPressed: _showFilterModal,
             tooltip: 'Filter',
           ),
+          if (!widget.isExpertOnly)
+            IconButton(
+              icon: const Icon(Icons.refresh, color: Colors.blue),
+              onPressed: () => _fetchObservations(resetPage: true),
+              tooltip: 'Refresh Queue',
+            ),
           if (widget.isExpertOnly) ...[
             const SizedBox(width: 8),
             Padding(
@@ -569,7 +611,7 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
             final captureMethod = obs['source']?.toString() ?? 'UPLOAD';
             const evaluationMethod = 'MANUAL';
             final imageUrl = obs['image_url']?.toString();
-            final isVerified = obs['is_verified'] == true || obs['sync_status'] == 'verified';
+            final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
             final contributorName = obs['users'] != null && obs['users'] is Map
                 ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
                 : 'Unknown User';
@@ -584,7 +626,22 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
               child: InkWell(
                 borderRadius: BorderRadius.circular(16.0),
                 onTap: () {
-                  _showToast('Viewing observation detail - placeholder!', isError: false);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => ObservationDetailsPage(
+                        obs: obs,
+                        isVerifyMode: !widget.isExpertOnly,
+                      ),
+                    ),
+                  ).then((value) {
+                    if (value == true && !widget.isExpertOnly) {
+                      setState(() {
+                        _observations.removeWhere((item) => item['observation_id'] == obs['observation_id']);
+                      });
+                    }
+                    _fetchObservations();
+                  });
                 },
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -704,24 +761,19 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                                   ],
                                 )
                               else if (!widget.isExpertOnly)
-                                SizedBox(
-                                  height: 28,
-                                  child: OutlinedButton.icon(
-                                    style: OutlinedButton.styleFrom(
-                                      foregroundColor: Colors.green[700],
-                                      side: BorderSide(color: Colors.green[300]!),
-                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 0),
-                                      shape: RoundedRectangleBorder(
-                                        borderRadius: BorderRadius.circular(6),
+                                const Row(
+                                  children: [
+                                    Icon(Icons.pending_actions_outlined, color: Colors.orange, size: 16),
+                                    SizedBox(width: 4),
+                                    Text(
+                                      'Needs Verification',
+                                      style: TextStyle(
+                                        color: Colors.orange,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w500,
                                       ),
                                     ),
-                                    onPressed: () => _verifyObservation(obs),
-                                    icon: const Icon(Icons.check, size: 14),
-                                    label: const Text(
-                                      'Verify',
-                                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                                    ),
-                                  ),
+                                  ],
                                 )
                               else
                                 const Row(
