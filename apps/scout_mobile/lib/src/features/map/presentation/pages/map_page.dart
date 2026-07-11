@@ -664,6 +664,7 @@ class _MapPageState extends State<MapPage> {
         setState(() {
           _observationsData = rawData.where((obs) {
             if (obs['is_deleted'] == true) return false;
+            if (obs['verification_result'] == 'REJECTED') return false;
             if (obs['under_verification'] == true && obs['user_id'] != currentUserId) return false;
             return true;
           }).toList();
@@ -738,7 +739,7 @@ class _MapPageState extends State<MapPage> {
   List<Marker> _buildObservationMarkers() {
     final filtered = _observationsData.where((obs) {
       if (obs['is_deleted'] == true) return false;
-      final isVerified = obs['is_verified'] == true || obs['sync_status'] == 'verified';
+      final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
       if (_selectedObservationVerification == 'Verified' && !isVerified) return false;
       if (_selectedObservationVerification == 'Unverified' && isVerified) return false;
 
@@ -770,7 +771,7 @@ class _MapPageState extends State<MapPage> {
       final lat = coords?['lat'] ?? 0.0;
       final lng = coords?['lng'] ?? 0.0;
       final confidence = double.tryParse(obs['confidence_score']?.toString() ?? '') ?? 0.0;
-      final isVerified = obs['is_verified'] == true || obs['sync_status'] == 'verified';
+      final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
 
       Color color;
       if (confidence >= 80.0) {
@@ -814,7 +815,7 @@ class _MapPageState extends State<MapPage> {
     final lng = coords?['lng'] ?? 0.0;
     final isOwner = obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
     final province = _getProvinceForObservation(LatLng(lat, lng));
-    final isVerified = obs['is_verified'] == true || obs['sync_status'] == 'verified';
+    final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
     final date = obs['observation_timestamp'] != null
         ? DateTime.tryParse(obs['observation_timestamp'])?.toLocal().toString().split('.')[0] ?? 'Unknown Date'
         : 'Unknown Date';
@@ -929,11 +930,32 @@ class _MapPageState extends State<MapPage> {
               const Text("Confidence Score", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
               Text("$confidence%", style: const TextStyle(fontSize: 13)),
               const SizedBox(height: 8),
-              const Text("Remarks", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
-              if (isVerified)
-                Text(remarks, style: const TextStyle(fontSize: 13))
-              else
-                const Text('Remarks are hidden until verified.', style: TextStyle(fontSize: 13, color: Colors.grey, fontStyle: FontStyle.italic)),
+              
+              (() {
+                final hasRemarks = remarks.trim().isNotEmpty;
+                final isPending = obs['under_verification'] == true || obs['verification_result'] == 'PENDING';
+                
+                bool shouldShowRemarksSection = false;
+                if (hasRemarks) {
+                  shouldShowRemarksSection = true;
+                } else if (isPending) {
+                  shouldShowRemarksSection = true;
+                }
+
+                if (shouldShowRemarksSection) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text("Remarks", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+                      if (hasRemarks)
+                        Text(remarks, style: const TextStyle(fontSize: 13))
+                      else
+                        const Text('Remarks are hidden until verified.', style: TextStyle(fontSize: 13, color: Colors.grey, fontStyle: FontStyle.italic)),
+                    ],
+                  );
+                }
+                return const SizedBox.shrink();
+              })(),
               
               const SizedBox(height: 16),
               
