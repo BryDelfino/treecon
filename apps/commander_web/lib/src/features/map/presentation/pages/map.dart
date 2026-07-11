@@ -917,6 +917,7 @@ class _MapPageState extends State<MapPage> {
       setState(() {
         _observationsData = rawData.where((obs) {
           if (obs['is_deleted'] == true) return false;
+          if (obs['verification_result'] == 'REJECTED') return false;
           if (obs['under_verification'] == true) return false;
           return true;
         }).toList();
@@ -1216,7 +1217,7 @@ class _MapPageState extends State<MapPage> {
     final filtered = _observationsData.where((obs) {
       // Skip deleted observations
       if (obs['is_deleted'] == true) return false;
-      final isVerified = obs['is_verified'] == true || obs['sync_status'] == 'verified';
+      final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
       if (_selectedObservationVerification == 'Verified' && !isVerified) return false;
       if (_selectedObservationVerification == 'Unverified' && isVerified) return false;
       
@@ -1250,7 +1251,7 @@ class _MapPageState extends State<MapPage> {
       final lat = coords?['lat'] ?? 0.0;
       final lng = coords?['lng'] ?? 0.0;
       final confidence = double.tryParse(obs['confidence_score']?.toString() ?? '') ?? 0.0;
-      final isVerified = obs['is_verified'] == true || obs['sync_status'] == 'verified';
+      final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
       
       // Color based on confidence score (higher = more certain = use green spectrum)
       Color color;
