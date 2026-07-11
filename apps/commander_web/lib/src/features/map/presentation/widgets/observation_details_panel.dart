@@ -39,7 +39,7 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
         
     final source = widget.obs['source']?.toString() ?? 'N/A';
     final isPublic = widget.obs['is_public'] == true;
-    final isVerified = widget.obs['is_verified'] == true || widget.obs['sync_status'] == 'verified';
+    final isVerified = widget.obs['verification_result'] == 'APPROVED' || widget.obs['verification_result'] == 'REJECTED';
     final verificationResult = widget.obs['verification_result']?.toString() ?? 'NONE';
     final underVerification = widget.obs['under_verification'] == true;
     
@@ -49,14 +49,19 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
     Color verifyColor = Colors.orange;
     
     if (isVerified) {
-      verifyStatusText = 'Verified';
-      verifyColor = Colors.blue;
+      if (verificationResult == 'APPROVED') {
+        verifyStatusText = 'Verified (Approved)';
+        verifyColor = Colors.blue;
+      } else if (verificationResult == 'REJECTED') {
+        verifyStatusText = 'Verified (Rejected)';
+        verifyColor = Colors.red;
+      } else {
+        verifyStatusText = 'Verified';
+        verifyColor = Colors.blue;
+      }
     } else if (underVerification) {
       verifyStatusText = 'Pending Verification';
       verifyColor = Colors.purple;
-    } else if (verificationResult == 'FAILED') {
-      verifyStatusText = 'Verification Rejected';
-      verifyColor = Colors.red;
     }
     
     final contributorName = widget.obs['users'] != null && widget.obs['users'] is Map
@@ -138,7 +143,7 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
                   _buildMetaRow(
                     isPublic ? Icons.public : Icons.lock, 
                     'Visibility', 
-                    isPublic ? 'Public' : 'Private',
+                    isPublic ? (underVerification ? 'Public (For Verification)' : 'Public') : 'Private',
                     color: isPublic ? Colors.blue : Colors.grey
                   ),
                   _buildMetaRow(
@@ -148,15 +153,15 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
                     color: verifyColor
                   ),
                   
-                  if (verificationResult == 'FAILED' && widget.obs['remarks'] != null)
+                  if (widget.obs['remarks'] != null && widget.obs['remarks'].toString().isNotEmpty)
                     Container(
                       margin: const EdgeInsets.only(top: 16),
                       padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(color: Colors.red[50], borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.red[200]!)),
+                      decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.grey[300]!)),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text('Rejection Remarks', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red)),
+                          const Text('Remarks', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
                           const SizedBox(height: 4),
                           Text(widget.obs['remarks'].toString(), style: const TextStyle(color: Colors.black87)),
                         ],
