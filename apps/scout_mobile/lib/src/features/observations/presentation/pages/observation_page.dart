@@ -87,7 +87,7 @@ class _ObservationPageState extends State<ObservationPage> {
         try {
           final data = await Supabase.instance.client
               .from('observations')
-              .select()
+              .select('*, verifier:users!observations_verifier_id_fkey(user_name)')
               .eq('user_id', user.id)
               .order('observation_timestamp', ascending: false);
 
