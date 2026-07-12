@@ -1,6 +1,17 @@
+// ignore_for_file: avoid_dynamic_calls
+
+import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'dart:convert';
+import 'package:flutter/services.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_services/shared_services.dart';
+import 'package:scout_mobile/src/core/services/network_service.dart';
+import 'package:intl/intl.dart';
+import 'package:scout_mobile/src/features/observations/data/observation_local_db.dart';
 
 class ObservationDetailsPage extends StatefulWidget {
   final Map<String, dynamic> obs;
@@ -16,14 +27,160 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
   bool _isLoading = false;
   bool _wasModified = false;
   RealtimeChannel? _subscription;
+  bool _isOnline = true;
+  StreamSubscription<bool>? _networkSub;
+  String _province = 'Loading...';
+  bool _isLoadingProvince = true;
+  late bool _isPublic;
+  late bool _isAnonymous;
 
   @override
   void initState() {
     super.initState();
+    _isPublic = widget.obs['is_public'] == true;
+    _isAnonymous = widget.obs['is_anonymous'] == true;
+    _isOnline = NetworkService.instance.isOnline;
+    _networkSub = NetworkService.instance.onConnectivityChanged.listen((isOnline) {
+      if (mounted) {
+        setState(() => _isOnline = isOnline);
+        if (!isOnline && !widget.isCached) {
+          _showToast('Connection lost. Returning to observations list.');
+          Navigator.pop(context, _wasModified ? 'REFRESH' : null);
+        }
+      }
+    });
+
     if (!widget.isCached) {
       _syncLatestState();
       _setupRealtime();
     }
+    _loadProvince();
+  }
+
+  Map<String, double>? _parseCoordinates(dynamic coordsData) {
+    if (coordsData == null) return null;
+    if (coordsData is Map) {
+      return {'lat': (coordsData['lat'] as num).toDouble(), 'lng': (coordsData['lng'] as num).toDouble()};
+    }
+    if (coordsData is String) {
+      final trimmed = coordsData.trim();
+      final hexRegex = RegExp(r'^(0x)?[0-9a-fA-F]+$');
+      if (hexRegex.hasMatch(trimmed)) {
+        return _parseEWKB(trimmed);
+      }
+      final match = RegExp(r'POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)', caseSensitive: false).firstMatch(trimmed);
+      if (match != null) {
+        return {'lat': double.parse(match.group(2)!), 'lng': double.parse(match.group(1)!)};
+      }
+    }
+    return null;
+  }
+
+  Map<String, double>? _parseEWKB(String hex) {
+    try {
+      String cleanHex = hex.startsWith('0x') ? hex.substring(2) : hex;
+      if (cleanHex.length < 42) return null;
+      final byteOrder = cleanHex.substring(0, 2);
+      final isLittleEndian = byteOrder == '01';
+      final typeHex = cleanHex.substring(2, 10);
+      final hasSrid = typeHex.toLowerCase() == '01000020' || typeHex.toLowerCase() == '20000001';
+      final int startX = hasSrid ? 18 : 10;
+      final int startY = hasSrid ? 34 : 26;
+      final double lng = _hexToDouble(cleanHex.substring(startX, startX + 16), isLittleEndian);
+      final double lat = _hexToDouble(cleanHex.substring(startY, startY + 16), isLittleEndian);
+      return {'lng': lng, 'lat': lat};
+    } catch (_) {
+      return null;
+    }
+  }
+
+  double _hexToDouble(String hex, bool isLittleEndian) {
+    final bytes = Uint8List(8);
+    for (int i = 0; i < 8; i++) {
+      final idx = isLittleEndian ? (i * 2) : ((7 - i) * 2);
+      bytes[i] = int.parse(hex.substring(idx, idx + 2), radix: 16);
+    }
+    return ByteData.sublistView(bytes).getFloat64(0, Endian.little);
+  }
+
+  Future<void> _loadProvince() async {
+    final coords = _parseCoordinates(widget.obs['coordinates']);
+    final double? lat = widget.obs['latitude'] ?? coords?['lat'];
+    final double? lng = widget.obs['longitude'] ?? coords?['lng'];
+    
+    if (lat == null || lng == null) {
+      if (mounted) setState(() { _province = 'Unknown'; _isLoadingProvince = false; });
+      return;
+    }
+
+    try {
+      final String geoJsonString = await rootBundle.loadString('assets/philippines.json');
+      final data = json.decode(geoJsonString);
+      final features = data['features'] as List;
+      final point = LatLng(lat, lng);
+
+      for (var feature in features) {
+        final props = feature['properties'];
+        final geometry = feature['geometry'];
+        if (geometry == null) continue;
+        final type = geometry['type'];
+        final coordsList = geometry['coordinates'] as List;
+
+        if (type == 'Polygon') {
+          final ring = coordsList[0] as List;
+          final points = ring.map((c) => LatLng((c[1] as num).toDouble(), (c[0] as num).toDouble())).toList();
+          if (_isPointInPolygon(point, points)) {
+            if (props != null && props['adm2_name'] != null && props['adm2_name'] != 'Special Geographic Area') {
+              if (mounted) setState(() { _province = props['adm2_name']; _isLoadingProvince = false; });
+              return;
+            }
+          }
+        } else if (type == 'MultiPolygon') {
+          for (var poly in coordsList) {
+            final ring = poly[0] as List;
+            final points = ring.map((c) => LatLng((c[1] as num).toDouble(), (c[0] as num).toDouble())).toList();
+            if (_isPointInPolygon(point, points)) {
+              if (props != null && props['adm2_name'] != null && props['adm2_name'] != 'Special Geographic Area') {
+                if (mounted) setState(() { _province = props['adm2_name']; _isLoadingProvince = false; });
+                return;
+              }
+            }
+          }
+        }
+      }
+      if (mounted) setState(() { _province = 'Unknown'; _isLoadingProvince = false; });
+    } catch (e) {
+      if (mounted) setState(() { _province = 'Unknown'; _isLoadingProvince = false; });
+    }
+  }
+
+  bool _isPointInPolygon(LatLng point, List<LatLng> polygon) {
+    int intersectCount = 0;
+    for (int j = 0; j < polygon.length - 1; j++) {
+      if (_rayCastIntersect(point, polygon[j], polygon[j + 1])) {
+        intersectCount++;
+      }
+    }
+    return (intersectCount % 2) == 1;
+  }
+
+  bool _rayCastIntersect(LatLng point, LatLng vertA, LatLng vertB) {
+    double aY = vertA.latitude;
+    double bY = vertB.latitude;
+    double aX = vertA.longitude;
+    double bX = vertB.longitude;
+    double pY = point.latitude;
+    double pX = point.longitude;
+
+    if ((aY > pY && bY > pY) || (aY < pY && bY < pY) || (aX < pX && bX < pX)) {
+      return false;
+    }
+
+    double m = (aY - bY) / (aX - bX);
+    double bee = (-aX) * m + aY;
+    double x = (pY - bee) / m;
+
+    return x > pX;
   }
 
   void _setupRealtime() {
@@ -41,20 +198,10 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
           ),
           callback: (payload) async {
             if (mounted) {
-              final oldResult = widget.obs['verification_result'];
               await _syncLatestState();
               setState(() {
                 _wasModified = true;
               });
-              
-              final newResult = widget.obs['verification_result'];
-              if (oldResult != newResult) {
-                if (newResult == 'APPROVED') {
-                  _showToast('✅ Your observation was just Approved by an expert!');
-                } else if (newResult == 'REJECTED') {
-                  _showToast('❌ Your observation was just Rejected by an expert.');
-                }
-              }
             }
           },
         )
@@ -63,6 +210,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
 
   @override
   void dispose() {
+    _networkSub?.cancel();
     if (_subscription != null) {
       Supabase.instance.client.removeChannel(_subscription!);
     }
@@ -131,6 +279,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
   Future<void> _handleRequestVerification() async {
     setState(() => _isLoading = true);
     await _syncLatestState();
+    if (!mounted) return;
     setState(() => _isLoading = false);
 
     if (widget.obs['under_verification'] == true || widget.obs['verification_result'] == 'APPROVED' || widget.obs['verification_result'] == 'REJECTED') {
@@ -138,30 +287,30 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
       return;
     }
 
-    final isPublic = widget.obs['is_public'] == true;
-    
-    if (!isPublic) {
-      final confirm = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Make Public?'),
-          content: const Text('For your observation to be verified by experts, its visibility must be set to public. Do you want to proceed and make this observation public?'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Proceed', style: TextStyle(color: Colors.white)),
-            ),
-          ],
-        ),
-      );
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Verification Terms'),
+        content: const Text(
+            'By proceeding, your observation will be queued for expert verification. It must be set to public during this process.\n\n'
+            'Please ensure that the uploaded image is clear and the observation subject is distinctly visible to assist our experts.\n\n'
+            'While pending, you can withdraw your request, set it back to private, or delete it at any time.\n\n'
+            'However, if an expert REJECTS this observation, it can never be made public again, and you will have to eventually delete it. Do you wish to proceed?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Proceed', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
 
-      if (confirm != true) return;
-    }
+    if (confirm != true) return;
 
     setState(() => _isLoading = true);
     try {
@@ -179,6 +328,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
         _showToast('Verification requested successfully.');
         setState(() {
           widget.obs['is_public'] = true;
+          _isPublic = true;
           widget.obs['under_verification'] = true;
           widget.obs['verification_result'] = 'PENDING';
         });
@@ -194,6 +344,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
   Future<void> _handleCancelVerification() async {
     setState(() => _isLoading = true);
     await _syncLatestState();
+    if (!mounted) return;
     setState(() => _isLoading = false);
 
     if (widget.obs['under_verification'] != true) {
@@ -248,15 +399,23 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
     }
   }
 
-  Future<void> _handleToggleVisibility() async {
-    setState(() => _isLoading = true);
-    await _syncLatestState();
-    setState(() => _isLoading = false);
-
-    final isPublic = widget.obs['is_public'] == true;
+  Future<void> _updatePrivacySettings(bool newPublic, bool newAnon) async {
     final underVerification = widget.obs['under_verification'] == true;
+    final id = widget.obs['observation_id'];
 
-    if (isPublic && underVerification) {
+    if (widget.isCached) {
+      setState(() {
+        _isPublic = newPublic;
+        _isAnonymous = newAnon;
+        widget.obs['is_public'] = newPublic;
+        widget.obs['is_anonymous'] = newAnon;
+      });
+      await ObservationLocalDb.instance.updateObservationSettings(id, newPublic, newAnon);
+      return;
+    }
+
+    final wasPublic = widget.obs['is_public'] == true;
+    if (newPublic == false && wasPublic && underVerification) {
       final confirm = await showDialog<bool>(
         context: context,
         builder: (context) => AlertDialog(
@@ -275,14 +434,23 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
           ],
         ),
       );
-      if (confirm != true) return;
+      if (confirm != true) {
+        // Revert switch visually
+        setState(() {
+          _isPublic = widget.obs['is_public'] == true;
+        });
+        return;
+      }
     }
 
     setState(() => _isLoading = true);
     try {
-      final id = widget.obs['observation_id'];
-      final updates = <String, dynamic>{'is_public': !isPublic};
-      if (isPublic && underVerification) {
+      final updates = <String, dynamic>{
+        'is_public': newPublic,
+        'is_anonymous': newAnon,
+      };
+      
+      if (newPublic == false && wasPublic && underVerification) {
         updates['under_verification'] = false;
         updates['verification_result'] = null;
       }
@@ -293,10 +461,12 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
           .eq('observation_id', id);
           
       if (mounted) {
-        _showToast(isPublic ? 'Observation is now private.' : 'Observation is now public.');
         setState(() {
-          widget.obs['is_public'] = !isPublic;
-          if (isPublic && underVerification) {
+          _isPublic = newPublic;
+          _isAnonymous = newAnon;
+          widget.obs['is_public'] = newPublic;
+          widget.obs['is_anonymous'] = newAnon;
+          if (updates.containsKey('under_verification')) {
             widget.obs['under_verification'] = false;
             widget.obs['verification_result'] = null;
           }
@@ -304,7 +474,13 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
         _wasModified = true;
       }
     } catch (e) {
-      _showToast('Failed to toggle visibility: $e');
+      _showToast('Failed to update privacy settings: $e');
+      if (mounted) {
+        setState(() {
+          _isPublic = widget.obs['is_public'] == true;
+          _isAnonymous = widget.obs['is_anonymous'] == true;
+        });
+      }
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -312,15 +488,20 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
 
   @override
   Widget build(BuildContext context) {
-    final dateStr = widget.obs['observation_timestamp'] != null
-        ? DateTime.tryParse(widget.obs['observation_timestamp'])?.toLocal().toString().split('.')[0] ?? widget.obs['observation_timestamp']
-        : 'Unknown Date';
-    final uploadStr = widget.obs['upload_timestamp'] != null
-        ? DateTime.tryParse(widget.obs['upload_timestamp'])?.toLocal().toString().split('.')[0] ?? widget.obs['upload_timestamp']
-        : 'Not Uploaded Yet';
+    final rawDateStr = widget.obs['observation_timestamp'] ?? widget.obs['timestamp'];
+    final rawDate = rawDateStr != null ? DateTime.tryParse(rawDateStr.toString()) : null;
+    final dateStr = rawDate != null ? DateFormat.yMMMd().add_jm().format(rawDate.toLocal()) : 'Unknown Date';
+    
+    final rawUploadStr = widget.obs['upload_timestamp'];
+    final rawUpload = rawUploadStr != null ? DateTime.tryParse(rawUploadStr.toString()) : null;
+    final uploadStr = rawUpload != null ? DateFormat.yMMMd().add_jm().format(rawUpload.toLocal()) : 'Not Uploaded Yet';
         
-    final source = widget.obs['source']?.toString() ?? 'N/A';
-    final isPublic = widget.obs['is_public'] == true;
+    final coords = _parseCoordinates(widget.obs['coordinates']);
+    final double? lat = widget.obs['latitude'] ?? coords?['lat'];
+    final double? lng = widget.obs['longitude'] ?? coords?['lng'];
+    final latStr = lat != null ? lat.toStringAsFixed(6) : 'N/A';
+    final lngStr = lng != null ? lng.toStringAsFixed(6) : 'N/A';
+
     final isVerified = widget.obs['verification_result'] == 'APPROVED' || widget.obs['verification_result'] == 'REJECTED';
     final verificationResult = widget.obs['verification_result']?.toString() ?? 'NONE';
     final underVerification = widget.obs['under_verification'] == true;
@@ -329,22 +510,17 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
     final localImagePath = widget.obs['image_path']?.toString();
     final isOwner = widget.obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
 
-    String verifyStatusText = 'Unverified';
     Color verifyColor = Colors.orange;
     
     if (isVerified) {
       if (verificationResult == 'APPROVED') {
-        verifyStatusText = 'Verified (Approved)';
         verifyColor = Colors.blue;
       } else if (verificationResult == 'REJECTED') {
-        verifyStatusText = 'Verified (Rejected)';
         verifyColor = Colors.red;
       } else {
-        verifyStatusText = 'Verified';
         verifyColor = Colors.blue;
       }
     } else if (underVerification) {
-      verifyStatusText = 'Pending Verification';
       verifyColor = Colors.purple;
     }
 
@@ -402,56 +578,102 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
               
               // Metadata
               _buildMetaRow(Icons.calendar_today, 'Observation Date', dateStr),
-              _buildMetaRow(Icons.cloud_upload, 'Upload Date', widget.isCached ? 'Not Uploaded' : uploadStr),
-              _buildMetaRow(Icons.device_hub, 'Source', source),
+              if (!widget.isCached)
+                _buildMetaRow(Icons.cloud_upload, 'Upload Date', uploadStr),
+              _buildMetaRow(Icons.location_on, 'Location', _isLoadingProvince ? 'Loading...' : _province),
+              _buildMetaRow(Icons.explore, 'Coordinates', '$latStr, $lngStr'),
               _buildMetaRow(
                 Icons.analytics_outlined,
                 'Confidence Score',
                 widget.obs['confidence_score']?.toString() ?? 'N/A',
               ),
-              _buildMetaRow(
-                isPublic ? Icons.public : Icons.lock, 
-                'Visibility', 
-                isPublic ? (underVerification ? 'Public (For Verification)' : 'Public') : 'Private',
-                color: isPublic ? Colors.blue : Colors.grey
-              ),
-              _buildMetaRow(
-                isVerified ? Icons.verified : (underVerification ? Icons.pending_actions : Icons.new_releases), 
-                'Status', 
-                verifyStatusText,
-                color: verifyColor
-              ),
               if (isVerified) ...[
-                _buildMetaRow(Icons.person_pin, 'Verified By', widget.obs['verifier']?['user_name']?.toString() ?? 'Unknown Expert'),
-                _buildMetaRow(Icons.access_time, 'Verification Time', widget.obs['verification_timestamp'] != null ? DateTime.tryParse(widget.obs['verification_timestamp'])?.toLocal().toString().split('.')[0] ?? 'Unknown Date' : 'Unknown Date'),
-              ],
-              
-              if (widget.obs['remarks'] != null && widget.obs['remarks'].toString().isNotEmpty)
+                const SizedBox(height: 16),
+                const Text('Expert Verification', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black87)),
+                const SizedBox(height: 8),
                 Container(
-                  margin: const EdgeInsets.only(top: 16),
                   padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.grey[300]!)),
+                  decoration: BoxDecoration(
+                    color: verifyColor.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: verifyColor.withValues(alpha: 0.3)),
+                  ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('Remarks', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
-                      const SizedBox(height: 4),
-                      Text(widget.obs['remarks'].toString(), style: const TextStyle(color: Colors.black87)),
+                      _buildMetaRow(Icons.gavel, 'Result', verificationResult),
+                      _buildMetaRow(Icons.person, 'Verified By', widget.obs['verifier'] != null ? widget.obs['verifier']['user_name'] : 'Unknown'),
+                      Builder(
+                        builder: (context) {
+                          final rawVerificationStr = widget.obs['verification_timestamp'];
+                          final rawVerification = rawVerificationStr != null ? DateTime.tryParse(rawVerificationStr.toString()) : null;
+                          final verificationStr = rawVerification != null ? DateFormat.yMMMd().add_jm().format(rawVerification.toLocal()) : 'Unknown Date';
+                          return _buildMetaRow(Icons.access_time, 'Verification Time', verificationStr);
+                        }
+                      ),
+                      if (widget.obs['remarks'] != null && widget.obs['remarks'].toString().isNotEmpty) ...[
+                        const Divider(height: 24),
+                        const Text('Expert Remarks', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
+                        const SizedBox(height: 4),
+                        Text(widget.obs['remarks'].toString(), style: const TextStyle(color: Colors.black87)),
+                      ],
                     ],
                   ),
                 ),
+              ],
+              if (isOwner && verificationResult != 'REJECTED') ...[
+                const SizedBox(height: 16),
+                const Text('Privacy Settings', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black87)),
+                const SizedBox(height: 8),
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.grey[200]!),
+                  ),
+                  child: Column(
+                    children: [
+                      SwitchListTile(
+                        title: const Text('Public Observation', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+                        subtitle: const Text('Allow others to view this', style: TextStyle(fontSize: 12)),
+                        value: _isPublic,
+                        activeTrackColor: Colors.green[700],
+                        onChanged: (val) {
+                          setState(() => _isPublic = val);
+                          _updatePrivacySettings(val, _isAnonymous);
+                        },
+                      ),
+                      const Divider(height: 1),
+                      SwitchListTile(
+                        title: const Text('Submit Anonymously', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+                        subtitle: const Text('Hide your username', style: TextStyle(fontSize: 12)),
+                        value: _isAnonymous,
+                        activeTrackColor: Colors.green[700],
+                        onChanged: (val) {
+                          setState(() => _isAnonymous = val);
+                          _updatePrivacySettings(_isPublic, val);
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+
+
 
               const SizedBox(height: 32),
               
               // Action Buttons
               if (widget.isCached)
                 ElevatedButton.icon(
-                  onPressed: _handleUpload,
+                  onPressed: _isOnline ? _handleUpload : null,
                   icon: const Icon(Icons.cloud_upload),
-                  label: const Text('Upload to System'),
+                  label: Text(_isOnline ? 'Upload to System' : 'Offline (Cannot Upload)'),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue,
+                    backgroundColor: Colors.green[700],
                     foregroundColor: Colors.white,
+                    disabledBackgroundColor: Colors.grey[400],
+                    disabledForegroundColor: Colors.white70,
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
                 ),
@@ -462,7 +684,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                   icon: const Icon(Icons.fact_check),
                   label: const Text('Request Expert Verification'),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.purple,
+                    backgroundColor: Colors.green[700],
                     foregroundColor: Colors.white,
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
@@ -482,23 +704,9 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                 ),
               ],
 
-              if (!widget.isCached && isOwner && verificationResult != 'REJECTED') ...[
-                const SizedBox(height: 12),
-                OutlinedButton.icon(
-                  onPressed: _handleToggleVisibility,
-                  icon: Icon(isPublic ? Icons.lock : Icons.public),
-                  label: Text(isPublic ? 'Set to Private' : 'Set to Public'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: isPublic ? Colors.grey : Colors.blue,
-                    side: BorderSide(color: isPublic ? Colors.grey : Colors.blue),
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                  ),
-                ),
-              ],
-                
               const SizedBox(height: 12),
               
-              if (isOwner || widget.isCached)
+              if (isOwner)
                 OutlinedButton.icon(
                   onPressed: _handleDelete,
                   icon: const Icon(Icons.delete_outline),
@@ -513,7 +721,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
           ),
           if (_isLoading)
             Container(
-              color: Colors.black.withOpacity(0.3),
+              color: Colors.black.withValues(alpha: 0.3),
               child: const Center(child: CircularProgressIndicator()),
             ),
         ],
