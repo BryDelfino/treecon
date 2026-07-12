@@ -917,8 +917,8 @@ class _MapPageState extends State<MapPage> {
       setState(() {
         _observationsData = rawData.where((obs) {
           if (obs['is_deleted'] == true) return false;
+          if (obs['is_public'] != true) return false;
           if (obs['verification_result'] == 'REJECTED') return false;
-          if (obs['under_verification'] == true) return false;
           return true;
         }).toList();
       });

@@ -127,6 +127,9 @@ class _MapPageState extends State<MapPage> {
 
     _networkSub = NetworkService.instance.onConnectivityChanged.listen((isOnline) {
       if (!mounted) return;
+      if (!isOnline) {
+        Navigator.of(context).popUntil((route) => route.isFirst);
+      }
       final hasSession = Supabase.instance.client.auth.currentSession != null;
       if (isOnline && hasSession && _countryPolygons.isEmpty && !_isCaLoading && !_isKrigingLoading) {
         setState(() {
@@ -660,13 +663,12 @@ class _MapPageState extends State<MapPage> {
           .order('observation_timestamp', ascending: false);
 
       if (mounted) {
-        final currentUserId = Supabase.instance.client.auth.currentUser?.id;
         final rawData = List<Map<String, dynamic>>.from(response);
         setState(() {
           _observationsData = rawData.where((obs) {
             if (obs['is_deleted'] == true) return false;
+            if (obs['is_public'] != true) return false;
             if (obs['verification_result'] == 'REJECTED') return false;
-            if (obs['under_verification'] == true && obs['user_id'] != currentUserId) return false;
             return true;
           }).toList();
         });
@@ -817,23 +819,28 @@ class _MapPageState extends State<MapPage> {
     final isOwner = obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
     final province = _getProvinceForObservation(LatLng(lat, lng));
     final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
-    final date = obs['observation_timestamp'] != null
-        ? DateTime.tryParse(obs['observation_timestamp'])?.toLocal().toString().split('.')[0] ?? 'Unknown Date'
-        : 'Unknown Date';
+    final rawTimestamp = obs['observation_timestamp'];
+    final rawDate = rawTimestamp != null ? DateTime.tryParse(rawTimestamp.toString()) : null;
+    final date = rawDate != null ? DateFormat.yMMMd().add_jm().format(rawDate.toLocal()) : 'Unknown Date';
     final imageUrl = obs['image_url']?.toString();
     final confidence = obs['confidence_score']?.toString() ?? 'N/A';
     final remarks = obs['remarks']?.toString() ?? 'No remarks provided.';
 
-    final contributorName = obs['users'] != null && obs['users'] is Map
-        ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
-        : 'Unknown User';
+    final isAnonymous = obs['is_anonymous'] == true;
+    final contributorName = isAnonymous 
+        ? 'Anonymous Scout'
+        : (obs['users'] != null && obs['users'] is Map
+            ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
+            : 'Unknown User');
     final role = obs['users'] != null && obs['users'] is Map
         ? (obs['users'] as Map)['role']?.toString().toUpperCase()
         : null;
     final isExpert = role == 'EXPERT';
-    final avatarUrl = obs['users'] != null && obs['users'] is Map
-        ? (obs['users'] as Map)['avatar_url']?.toString()
-        : null;
+    final avatarUrl = isAnonymous 
+        ? null 
+        : (obs['users'] != null && obs['users'] is Map
+            ? (obs['users'] as Map)['avatar_url']?.toString()
+            : null);
     
     final verifierName = obs['verifier'] != null && obs['verifier'] is Map
         ? (obs['verifier'] as Map)['user_name']?.toString()
@@ -896,7 +903,7 @@ class _MapPageState extends State<MapPage> {
               if (isVerified) ...[
                 const SizedBox(height: 4),
                 Text("Verified by: $verifierName", style: const TextStyle(fontSize: 12, color: Colors.blue)),
-                Text("Verification Time: $verificationDate", style: const TextStyle(fontSize: 12, color: Colors.blue)),
+                Text("Verification Timestamp: $verificationDate", style: const TextStyle(fontSize: 12, color: Colors.blue)),
               ],
               if (!isVerified && verificationResult == 'FAILED') ...[
                 const SizedBox(height: 4),
@@ -922,7 +929,7 @@ class _MapPageState extends State<MapPage> {
                 ],
               ),
               const SizedBox(height: 4),
-              Text("Timestamp: $date", style: const TextStyle(fontSize: 13)),
+              Text("Observation Timestamp: $date", style: const TextStyle(fontSize: 13)),
               Text("Province: $province", style: const TextStyle(fontSize: 13)),
               if (isOwner)
                 Text("Lat/Lng: ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}", style: const TextStyle(fontSize: 13)),
@@ -979,7 +986,7 @@ class _MapPageState extends State<MapPage> {
                     });
                   },
                   icon: const Icon(Icons.info_outline),
-                  label: const Text('View Full Details'),
+                  label: const Text('View Details'),
                 ),
               ),
             ],
