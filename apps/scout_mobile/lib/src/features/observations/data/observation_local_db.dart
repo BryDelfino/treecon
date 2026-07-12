@@ -24,8 +24,9 @@ class ObservationLocalDb {
     final path = join(documentsDirectory.path, 'treecon_scout.db');
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
     );
   }
 
@@ -39,9 +40,18 @@ class ObservationLocalDb {
         image_path TEXT,
         observation_timestamp TEXT NOT NULL,
         source TEXT NOT NULL,
-        sync_status TEXT NOT NULL
+        sync_status TEXT NOT NULL,
+        is_public INTEGER DEFAULT 1,
+        is_anonymous INTEGER DEFAULT 0
       )
     ''');
+  }
+
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute('ALTER TABLE cached_observations ADD COLUMN is_public INTEGER DEFAULT 1;');
+      await db.execute('ALTER TABLE cached_observations ADD COLUMN is_anonymous INTEGER DEFAULT 0;');
+    }
   }
 
   Future<void> open() async {
@@ -98,6 +108,19 @@ class ObservationLocalDb {
       whereArgs: [observationId],
     );
     await updatePendingCount();
+  }
+
+  Future<void> updateObservationSettings(String observationId, bool isPublic, bool isAnonymous) async {
+    final db = await database;
+    await db.update(
+      'cached_observations',
+      {
+        'is_public': isPublic ? 1 : 0,
+        'is_anonymous': isAnonymous ? 1 : 0,
+      },
+      where: 'observation_id = ?',
+      whereArgs: [observationId],
+    );
   }
 
   Future<void> markFailed(String observationId) async {
