@@ -15,11 +15,54 @@ class DashboardLayout extends StatefulWidget {
 class _DashboardLayoutState extends State<DashboardLayout> {
   int _selectedIndex = 0;
   Map<String, dynamic>? _profile;
+  int _pendingCount = 0;
+  RealtimeChannel? _queueSubscription;
 
   @override
   void initState() {
     super.initState();
     _fetchProfile();
+    _fetchPendingCount();
+    _setupQueueListener();
+  }
+
+  @override
+  void dispose() {
+    if (_queueSubscription != null) {
+      Supabase.instance.client.removeChannel(_queueSubscription!);
+    }
+    super.dispose();
+  }
+
+  Future<void> _fetchPendingCount() async {
+    try {
+      final res = await Supabase.instance.client
+          .from('observations')
+          .select('observation_id')
+          .eq('under_verification', true)
+          .eq('is_public', true)
+          .eq('verification_result', 'PENDING')
+          .count(CountOption.exact);
+      if (mounted) {
+        setState(() {
+          _pendingCount = res.count;
+        });
+      }
+    } catch (_) {}
+  }
+
+  void _setupQueueListener() {
+    _queueSubscription = Supabase.instance.client
+        .channel('public:observations_queue_badge')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.all,
+          schema: 'public',
+          table: 'observations',
+          callback: (payload) {
+            _fetchPendingCount();
+          },
+        )
+        .subscribe();
   }
 
   Future<void> _fetchProfile() async {
@@ -139,7 +182,7 @@ class _DashboardLayoutState extends State<DashboardLayout> {
 
                 // Navigation Items
                 _buildNavItem(0, Icons.assignment_outlined, Icons.assignment, 'My Observations'),
-                _buildNavItem(1, Icons.verified_outlined, Icons.verified, 'Verify Observations'),
+                _buildNavItem(1, Icons.verified_outlined, Icons.verified, 'Verify Observations', badgeCount: _pendingCount),
                 _buildNavItem(2, Icons.map_outlined, Icons.map, 'Spatial Map'),
                 _buildNavItem(3, Icons.person_outline, Icons.person, 'My Profile'),
 
@@ -223,7 +266,7 @@ class _DashboardLayoutState extends State<DashboardLayout> {
     );
   }
 
-  Widget _buildNavItem(int index, IconData outlineIcon, IconData filledIcon, String label) {
+  Widget _buildNavItem(int index, IconData outlineIcon, IconData filledIcon, String label, {int? badgeCount}) {
     final isSelected = _selectedIndex == index;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -247,14 +290,32 @@ class _DashboardLayoutState extends State<DashboardLayout> {
                   size: 22,
                 ),
                 const SizedBox(width: 16),
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 14,
-                    fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-                    color: isSelected ? Colors.green[800] : Colors.grey[700],
+                Expanded(
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                      color: isSelected ? Colors.green[800] : Colors.grey[700],
+                    ),
                   ),
                 ),
+                if (badgeCount != null && badgeCount > 0)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.red[600],
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Text(
+                      badgeCount > 99 ? '99+' : badgeCount.toString(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),
