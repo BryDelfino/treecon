@@ -1,3 +1,4 @@
+// ignore_for_file: avoid_dynamic_calls
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:flutter/services.dart';
@@ -50,11 +51,15 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
             value: observationId,
           ),
           callback: (payload) {
-            if (mounted) {
+            if (mounted && !_isSubmitting) {
               final newRow = payload.newRecord;
               if (newRow['under_verification'] != true || newRow['is_public'] != true || newRow['is_deleted'] == true) {
                 _showToast('The user has dequeued, deleted, or made this observation private.', isError: true);
                 Navigator.pop(context, true); // Pop out and signal the list to refresh
+              } else {
+                setState(() {
+                  widget.obs['is_anonymous'] = newRow['is_anonymous'];
+                });
               }
             }
           },
@@ -318,6 +323,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
       _isSubmitting = true;
     });
 
+    bool success = false;
     try {
       final user = Supabase.instance.client.auth.currentUser;
       if (user == null) throw Exception('User not authenticated');
@@ -345,6 +351,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
 
       if (updateResponse.isEmpty) {
         _showToast('Action failed: The user likely cancelled the request or set the observation to private.', isError: true);
+        success = true; // Still counts as navigating away successfully
         if (mounted) {
            Navigator.pop(context, true); // Remove from list
         }
@@ -352,13 +359,14 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
       }
 
       _showToast('Observation verified successfully.', isError: false);
+      success = true;
       if (mounted) {
         Navigator.pop(context, true); // Go back to the list and signal success
       }
     } catch (e) {
       _showToast('Failed to verify: $e');
     } finally {
-      if (mounted) {
+      if (mounted && !success) {
         setState(() {
           _isSubmitting = false;
         });
@@ -385,9 +393,13 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
     final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
     final isPendingVerification = obs['under_verification'] == true;
     
-    final contributorName = obs['users'] != null && obs['users'] is Map
-        ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
-        : 'Unknown User';
+    final isPublic = obs['is_public'] == true;
+    final isAnonymous = obs['is_anonymous'] == true;
+    final contributorName = (isPublic && isAnonymous)
+        ? 'Anonymous Scout'
+        : (obs['users'] != null && obs['users'] is Map
+            ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
+            : 'Unknown User');
         
     final rawTimestamp = obs['observation_timestamp'] ?? obs['upload_timestamp'];
     final dateStr = rawTimestamp != null
@@ -419,11 +431,11 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(color: Colors.blue[200]!),
                   ),
-                  child: Row(
+                  child: const Row(
                     children: [
-                      const Icon(Icons.verified, color: Colors.blue),
-                      const SizedBox(width: 8),
-                      const Text('This observation has been verified.', style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold)),
+                      Icon(Icons.verified, color: Colors.blue),
+                      SizedBox(width: 8),
+                      Text('This observation has been verified.', style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold)),
                     ],
                   ),
                 )
@@ -436,11 +448,11 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(color: Colors.red[200]!),
                   ),
-                  child: Row(
+                  child: const Row(
                     children: [
-                      const Icon(Icons.cancel, color: Colors.red),
-                      const SizedBox(width: 8),
-                      const Text('This observation verification was rejected.', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
+                      Icon(Icons.cancel, color: Colors.red),
+                      SizedBox(width: 8),
+                      Text('This observation verification was rejected.', style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold)),
                     ],
                   ),
                 ),
