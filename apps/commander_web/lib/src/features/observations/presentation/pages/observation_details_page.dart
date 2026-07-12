@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'dart:convert';
 import 'package:latlong2/latlong.dart';
 import 'dart:typed_data';
+import 'package:intl/intl.dart';
+import 'dart:typed_data';
 
 class ObservationDetailsPage extends StatefulWidget {
   final Map<String, dynamic> obs;
@@ -402,10 +404,19 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
             : 'Unknown User');
         
     final rawTimestamp = obs['observation_timestamp'] ?? obs['upload_timestamp'];
-    final dateStr = rawTimestamp != null
-        ? DateTime.tryParse(rawTimestamp.toString())?.toLocal().toString().substring(0, 16) ?? rawTimestamp.toString()
-        : 'N/A';
+    final rawDate = rawTimestamp != null ? DateTime.tryParse(rawTimestamp.toString()) : null;
+    final dateStr = rawDate != null ? DateFormat.yMMMd().add_jm().format(rawDate.toLocal()) : 'N/A';
     final confidenceScore = obs['confidence_score'] != null ? '${obs['confidence_score']}%' : 'N/A';
+    final isOwner = obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
+    final rawVerificationResult = obs['verification_result']?.toString() ?? 'NONE';
+    final verificationResult = rawVerificationResult == 'APPROVED' ? 'Verified' : (rawVerificationResult == 'REJECTED' ? 'Rejected' : rawVerificationResult);
+    final verifierName = obs['verifier'] != null && obs['verifier'] is Map 
+        ? (obs['verifier'] as Map)['user_name']?.toString() ?? 'Unknown'
+        : 'Unknown';
+    final rawVerificationStr = obs['verification_timestamp'];
+    final rawVerification = rawVerificationStr != null ? DateTime.tryParse(rawVerificationStr.toString()) : null;
+    final verificationStr = rawVerification != null ? DateFormat.yMMMd().add_jm().format(rawVerification.toLocal()) : 'Unknown Date';
+    Color verifyColor = isVerified ? (rawVerificationResult == 'APPROVED' ? Colors.blue : Colors.red) : Colors.orange;
 
     return Scaffold(
       backgroundColor: Colors.grey[50],
@@ -507,9 +518,11 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                                 const Divider(height: 24),
                                 _buildDetailRow(Icons.person, 'Observer', contributorName),
                                 const SizedBox(height: 12),
-                                _buildDetailRow(Icons.calendar_today, 'Date', dateStr),
-                                const SizedBox(height: 12),
-                                _buildDetailRow(Icons.location_on, 'Coordinates', 'Lat: $latStr, Lng: $lngStr'),
+                                _buildDetailRow(Icons.calendar_today, 'Observation Timestamp', dateStr),
+                                if (isOwner) ...[
+                                  const SizedBox(height: 12),
+                                  _buildDetailRow(Icons.location_on, 'Coordinates', 'Lat: $latStr, Lng: $lngStr'),
+                                ],
                                 const SizedBox(height: 12),
                                 _buildDetailRow(Icons.map, 'Province', _isLoadingProvince ? 'Loading...' : _province ?? 'Unknown'),
                                 const SizedBox(height: 12),
@@ -524,6 +537,39 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                         ),
 
                         const SizedBox(height: 24),
+
+                        if (isVerified) ...[
+                          Card(
+                            elevation: 2,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                            child: Padding(
+                              padding: const EdgeInsets.all(20.0),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(Icons.gavel, color: verifyColor),
+                                      const SizedBox(width: 8),
+                                      const Text('Expert Verification', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                                    ],
+                                  ),
+                                  const Divider(height: 24),
+                                  _buildDetailRow(Icons.gavel, 'Result', verificationResult),
+                                  const SizedBox(height: 12),
+                                  _buildDetailRow(Icons.person, 'Verified By', verifierName),
+                                  const SizedBox(height: 12),
+                                  _buildDetailRow(Icons.access_time, 'Verification Timestamp', verificationStr),
+                                  if (obs['remarks'] != null && obs['remarks'].toString().isNotEmpty) ...[
+                                    const SizedBox(height: 12),
+                                    _buildDetailRow(Icons.notes, 'Expert Remarks', obs['remarks']),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 24),
+                        ],
 
                         // Verification Panel (Only if Verify Mode AND Pending)
                         if (widget.isVerifyMode && isPendingVerification)

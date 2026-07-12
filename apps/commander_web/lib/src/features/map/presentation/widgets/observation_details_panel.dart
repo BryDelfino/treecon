@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:intl/intl.dart';
 
 class ObservationDetailsPanel extends StatefulWidget {
   final Map<String, dynamic> obs;
@@ -30,12 +32,13 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final dateStr = widget.obs['observation_timestamp'] != null
-        ? DateTime.tryParse(widget.obs['observation_timestamp'])?.toLocal().toString().split('.')[0] ?? widget.obs['observation_timestamp']
-        : 'Unknown Date';
-    final uploadStr = widget.obs['upload_timestamp'] != null
-        ? DateTime.tryParse(widget.obs['upload_timestamp'])?.toLocal().toString().split('.')[0] ?? widget.obs['upload_timestamp']
-        : 'Not Uploaded Yet';
+    final rawTimestamp = widget.obs['observation_timestamp'];
+    final rawDate = rawTimestamp != null ? DateTime.tryParse(rawTimestamp.toString()) : null;
+    final dateStr = rawDate != null ? DateFormat.yMMMd().add_jm().format(rawDate.toLocal()) : 'Unknown Date';
+    
+    final rawUploadStr = widget.obs['upload_timestamp'];
+    final rawUpload = rawUploadStr != null ? DateTime.tryParse(rawUploadStr.toString()) : null;
+    final uploadStr = rawUpload != null ? DateFormat.yMMMd().add_jm().format(rawUpload.toLocal()) : 'Not Uploaded Yet';
     final isPublic = widget.obs['is_public'] == true;
     final isVerified = widget.obs['verification_result'] == 'APPROVED' || widget.obs['verification_result'] == 'REJECTED';
     final verificationResult = widget.obs['verification_result']?.toString() ?? 'NONE';
@@ -48,10 +51,10 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
     
     if (isVerified) {
       if (verificationResult == 'APPROVED') {
-        verifyStatusText = 'Verified (Approved)';
+        verifyStatusText = 'Verified';
         verifyColor = Colors.blue;
       } else if (verificationResult == 'REJECTED') {
-        verifyStatusText = 'Verified (Rejected)';
+        verifyStatusText = 'Rejected';
         verifyColor = Colors.red;
       } else {
         verifyStatusText = 'Verified';
@@ -68,6 +71,13 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
         : (widget.obs['users'] != null && widget.obs['users'] is Map
             ? (widget.obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
             : 'Unknown User');
+
+    final verifierName = widget.obs['verifier'] != null && widget.obs['verifier'] is Map 
+        ? (widget.obs['verifier'] as Map)['user_name']?.toString() ?? 'Unknown'
+        : 'Unknown';
+    final rawVerificationStr = widget.obs['verification_timestamp'];
+    final rawVerification = rawVerificationStr != null ? DateTime.tryParse(rawVerificationStr.toString()) : null;
+    final verificationStr = rawVerification != null ? DateFormat.yMMMd().add_jm().format(rawVerification.toLocal()) : 'Unknown Date';
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -138,20 +148,18 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
                   ],
                   
                   _buildMetaRow(Icons.person, 'Observer', contributorName),
-                  _buildMetaRow(Icons.calendar_today, 'Observation Date', dateStr),
-                  _buildMetaRow(Icons.cloud_upload, 'Upload Date', uploadStr),
-                  _buildMetaRow(
-                    isPublic ? Icons.public : Icons.lock, 
-                    'Visibility', 
-                    isPublic ? (underVerification ? 'Public (For Verification)' : 'Public') : 'Private',
-                    color: isPublic ? Colors.blue : Colors.grey
-                  ),
+                  _buildMetaRow(Icons.calendar_today, 'Observation Timestamp', dateStr),
+                  _buildMetaRow(Icons.cloud_upload, 'Upload Timestamp', uploadStr),
                   _buildMetaRow(
                     isVerified ? Icons.verified : (underVerification ? Icons.pending_actions : Icons.new_releases), 
                     'Status', 
                     verifyStatusText,
                     color: verifyColor
                   ),
+                  if (isVerified) ...[
+                    _buildMetaRow(Icons.person_outline, 'Verified By', verifierName),
+                    _buildMetaRow(Icons.access_time, 'Verification Timestamp', verificationStr),
+                  ],
                   
                   if (widget.obs['remarks'] != null && widget.obs['remarks'].toString().isNotEmpty)
                     Container(
@@ -172,24 +180,25 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
             ),
             const Divider(height: 1),
             // Actions
-            Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: _isDeleting
-                  ? const Center(child: CircularProgressIndicator())
-                  : SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        onPressed: _handleDelete,
-                        icon: const Icon(Icons.delete_outline),
-                        label: const Text('Delete Observation'),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.red,
-                          side: const BorderSide(color: Colors.red),
-                          padding: const EdgeInsets.symmetric(vertical: 16),
+            if (Supabase.instance.client.auth.currentUser?.id == widget.obs['user_id'])
+              Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: _isDeleting
+                    ? const Center(child: CircularProgressIndicator())
+                    : SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: _handleDelete,
+                          icon: const Icon(Icons.delete_outline),
+                          label: const Text('Delete Observation'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.red,
+                            side: const BorderSide(color: Colors.red),
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                          ),
                         ),
                       ),
-                    ),
-            ),
+              ),
           ],
         ),
       ),
