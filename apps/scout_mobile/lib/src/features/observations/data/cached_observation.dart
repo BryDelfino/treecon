@@ -7,6 +7,8 @@ class CachedObservation {
   final DateTime observationTimestamp;
   final String source;
   final String syncStatus;
+  final bool isPublic;
+  final bool isAnonymous;
 
   CachedObservation({
     required this.observationId,
@@ -17,6 +19,8 @@ class CachedObservation {
     required this.observationTimestamp,
     this.source = 'MOBILE',
     this.syncStatus = 'PENDING',
+    this.isPublic = true,
+    this.isAnonymous = false,
   });
 
   Map<String, dynamic> toMap() {
@@ -29,6 +33,8 @@ class CachedObservation {
       'observation_timestamp': observationTimestamp.toIso8601String(),
       'source': source,
       'sync_status': syncStatus,
+      'is_public': isPublic ? 1 : 0,
+      'is_anonymous': isAnonymous ? 1 : 0,
     };
   }
 
@@ -42,6 +48,8 @@ class CachedObservation {
       observationTimestamp: DateTime.parse(map['observation_timestamp'] as String),
       source: map['source'] as String? ?? 'mobile',
       syncStatus: map['sync_status'] as String? ?? 'PENDING',
+      isPublic: map['is_public'] == 1,
+      isAnonymous: map['is_anonymous'] == 1,
     );
   }
 }
