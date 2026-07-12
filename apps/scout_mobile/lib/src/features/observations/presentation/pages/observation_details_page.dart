@@ -503,7 +503,8 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
     final lngStr = lng != null ? lng.toStringAsFixed(6) : 'N/A';
 
     final isVerified = widget.obs['verification_result'] == 'APPROVED' || widget.obs['verification_result'] == 'REJECTED';
-    final verificationResult = widget.obs['verification_result']?.toString() ?? 'NONE';
+    final rawVerificationResult = widget.obs['verification_result']?.toString() ?? 'NONE';
+    final verificationResult = rawVerificationResult == 'APPROVED' ? 'Verified' : (rawVerificationResult == 'REJECTED' ? 'Rejected' : rawVerificationResult);
     final underVerification = widget.obs['under_verification'] == true;
     
     final imageUrl = widget.obs['image_url']?.toString();
@@ -513,9 +514,9 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
     Color verifyColor = Colors.orange;
     
     if (isVerified) {
-      if (verificationResult == 'APPROVED') {
+      if (rawVerificationResult == 'APPROVED') {
         verifyColor = Colors.blue;
-      } else if (verificationResult == 'REJECTED') {
+      } else if (rawVerificationResult == 'REJECTED') {
         verifyColor = Colors.red;
       } else {
         verifyColor = Colors.blue;
@@ -577,11 +578,12 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
               const SizedBox(height: 24),
               
               // Metadata
-              _buildMetaRow(Icons.calendar_today, 'Observation Date', dateStr),
+              _buildMetaRow(Icons.calendar_today, 'Observation Timestamp', dateStr),
               if (!widget.isCached)
-                _buildMetaRow(Icons.cloud_upload, 'Upload Date', uploadStr),
+                _buildMetaRow(Icons.cloud_upload, 'Upload Timestamp', uploadStr),
               _buildMetaRow(Icons.location_on, 'Location', _isLoadingProvince ? 'Loading...' : _province),
-              _buildMetaRow(Icons.explore, 'Coordinates', '$latStr, $lngStr'),
+              if (isOwner)
+                _buildMetaRow(Icons.explore, 'Coordinates', '$latStr, $lngStr'),
               _buildMetaRow(
                 Icons.analytics_outlined,
                 'Confidence Score',
@@ -608,7 +610,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                           final rawVerificationStr = widget.obs['verification_timestamp'];
                           final rawVerification = rawVerificationStr != null ? DateTime.tryParse(rawVerificationStr.toString()) : null;
                           final verificationStr = rawVerification != null ? DateFormat.yMMMd().add_jm().format(rawVerification.toLocal()) : 'Unknown Date';
-                          return _buildMetaRow(Icons.access_time, 'Verification Time', verificationStr);
+                          return _buildMetaRow(Icons.access_time, 'Verification Timestamp', verificationStr);
                         }
                       ),
                       if (widget.obs['remarks'] != null && widget.obs['remarks'].toString().isNotEmpty) ...[

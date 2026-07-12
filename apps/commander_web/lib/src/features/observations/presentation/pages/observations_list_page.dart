@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:typed_data';
+import 'package:intl/intl.dart';
 import 'package:shared_services/shared_services.dart';
 import 'observation_details_page.dart';
 
@@ -629,9 +630,8 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
             final severity = obs['confidence_score'] != null ? 'high' : 'unknown';
             final severityColor = _getSeverityColor(severity);
             final rawTimestamp = obs['observation_timestamp'] ?? obs['upload_timestamp'];
-            final dateStr = rawTimestamp != null
-                ? DateTime.tryParse(rawTimestamp.toString())?.toLocal().toString().substring(0, 16) ?? rawTimestamp.toString()
-                : 'N/A';
+            final rawDate = rawTimestamp != null ? DateTime.tryParse(rawTimestamp.toString()) : null;
+            final dateStr = rawDate != null ? DateFormat.yMMMd().add_jm().format(rawDate.toLocal()) : 'N/A';
             final coords = _parseCoordinates(obs['coordinates']);
             final latStr = coords != null ? coords['lat']!.toStringAsFixed(6) : 'N/A';
             final lngStr = coords != null ? coords['lng']!.toStringAsFixed(6) : 'N/A';
@@ -646,6 +646,7 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                 : (obs['users'] != null && obs['users'] is Map
                     ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
                     : 'Unknown User');
+            final isOwner = obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
 
             return Card(
               elevation: 2,
@@ -735,25 +736,27 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                             ],
                           ),
                           const Spacer(),
-                          Row(
-                            children: [
-                              Icon(Icons.location_on_outlined, size: 14, color: Colors.green[700]),
-                              const SizedBox(width: 4.0),
-                              Expanded(
-                                child: Text(
-                                  'Lat: $latStr, Lng: $lngStr',
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w500,
-                                    color: Colors.black87,
+                          if (isOwner) ...[
+                            Row(
+                              children: [
+                                Icon(Icons.location_on_outlined, size: 14, color: Colors.green[700]),
+                                const SizedBox(width: 4.0),
+                                Expanded(
+                                  child: Text(
+                                    'Lat: $latStr, Lng: $lngStr',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w500,
+                                      color: Colors.black87,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
                                   ),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
                                 ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 4.0),
+                              ],
+                            ),
+                            const SizedBox(height: 4.0),
+                          ],
                           Row(
                             children: [
                               Icon(Icons.camera_alt_outlined, size: 14, color: Colors.grey[600]),
