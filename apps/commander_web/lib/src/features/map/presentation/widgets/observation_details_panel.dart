@@ -36,8 +36,6 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
     final uploadStr = widget.obs['upload_timestamp'] != null
         ? DateTime.tryParse(widget.obs['upload_timestamp'])?.toLocal().toString().split('.')[0] ?? widget.obs['upload_timestamp']
         : 'Not Uploaded Yet';
-        
-    final source = widget.obs['source']?.toString() ?? 'N/A';
     final isPublic = widget.obs['is_public'] == true;
     final isVerified = widget.obs['verification_result'] == 'APPROVED' || widget.obs['verification_result'] == 'REJECTED';
     final verificationResult = widget.obs['verification_result']?.toString() ?? 'NONE';
@@ -64,9 +62,12 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
       verifyColor = Colors.purple;
     }
     
-    final contributorName = widget.obs['users'] != null && widget.obs['users'] is Map
-        ? (widget.obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
-        : 'Unknown User';
+    final isAnonymous = widget.obs['is_anonymous'] == true;
+    final contributorName = (isPublic && isAnonymous) 
+        ? 'Anonymous Scout'
+        : (widget.obs['users'] != null && widget.obs['users'] is Map
+            ? (widget.obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
+            : 'Unknown User');
 
     return Align(
       alignment: Alignment.centerLeft,
@@ -139,7 +140,6 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
                   _buildMetaRow(Icons.person, 'Observer', contributorName),
                   _buildMetaRow(Icons.calendar_today, 'Observation Date', dateStr),
                   _buildMetaRow(Icons.cloud_upload, 'Upload Date', uploadStr),
-                  _buildMetaRow(Icons.device_hub, 'Source', source),
                   _buildMetaRow(
                     isPublic ? Icons.public : Icons.lock, 
                     'Visibility', 
