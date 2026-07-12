@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:typed_data';
+
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle, SystemNavigator;
@@ -12,6 +12,7 @@ import 'package:http/http.dart' as http;
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_services/shared_services.dart';
 import 'package:scout_mobile/src/core/services/network_service.dart';
+import 'package:intl/intl.dart';
 import 'package:scout_mobile/src/features/observations/presentation/pages/observation_details_page.dart';
 
 class MapPage extends StatefulWidget {
@@ -837,9 +838,8 @@ class _MapPageState extends State<MapPage> {
     final verifierName = obs['verifier'] != null && obs['verifier'] is Map
         ? (obs['verifier'] as Map)['user_name']?.toString()
         : 'Unknown Expert';
-    final verificationDate = obs['verification_timestamp'] != null
-        ? DateTime.tryParse(obs['verification_timestamp'])?.toLocal().toString().split('.')[0] ?? 'Unknown Date'
-        : 'Unknown Date';
+    final rawVerification = obs['verification_timestamp'] != null ? DateTime.tryParse(obs['verification_timestamp']) : null;
+    final verificationDate = rawVerification != null ? DateFormat.yMMMd().add_jm().format(rawVerification.toLocal()) : 'Unknown Date';
     final verificationResult = obs['verification_result']?.toString();
 
     showModalBottomSheet(
