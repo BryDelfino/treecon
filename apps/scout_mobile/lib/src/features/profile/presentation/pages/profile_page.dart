@@ -36,10 +36,20 @@ class _ProfilePageState extends State<ProfilePage> {
     if (NetworkService.instance.isOnline && Supabase.instance.client.auth.currentUser != null) {
       _fetchProfile();
     }
+    _usernameController.addListener(_onTextChanged);
+    _passwordController.addListener(_onTextChanged);
+    _confirmPasswordController.addListener(_onTextChanged);
+  }
+
+  void _onTextChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    _usernameController.removeListener(_onTextChanged);
+    _passwordController.removeListener(_onTextChanged);
+    _confirmPasswordController.removeListener(_onTextChanged);
     _usernameController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
@@ -83,6 +93,18 @@ class _ProfilePageState extends State<ProfilePage> {
         _showToast('Failed to load profile: $e');
       }
     }
+  }
+
+  bool get _canSaveUsername {
+    if (_profile == null || _isSavingUsername) return false;
+    final currentUsername = _profile!['user_name'] ?? '';
+    final newUsername = _usernameController.text.trim();
+    return newUsername.isNotEmpty && newUsername != currentUsername;
+  }
+
+  bool get _canSavePassword {
+    if (_isSavingPassword) return false;
+    return _passwordController.text.isNotEmpty && _confirmPasswordController.text.isNotEmpty;
   }
 
   Future<void> _updateUsername() async {
@@ -489,7 +511,7 @@ class _ProfilePageState extends State<ProfilePage> {
                           padding: const EdgeInsets.symmetric(vertical: 14),
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
-                        onPressed: _isSavingUsername ? null : _updateUsername,
+                        onPressed: _canSaveUsername ? _updateUsername : null,
                         icon: _isSavingUsername
                             ? const SizedBox(
                                 width: 18,
@@ -583,7 +605,7 @@ class _ProfilePageState extends State<ProfilePage> {
                             padding: const EdgeInsets.symmetric(vertical: 14),
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                           ),
-                          onPressed: _isSavingPassword ? null : _updatePassword,
+                          onPressed: _canSavePassword ? _updatePassword : null,
                           icon: _isSavingPassword
                               ? const SizedBox(
                                   width: 18,
