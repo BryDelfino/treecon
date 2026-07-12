@@ -16,6 +16,7 @@ class ObservationsListPage extends StatefulWidget {
 }
 
 class _ObservationsListPageState extends State<ObservationsListPage> {
+  final Set<String> _knownQueuedIds = {};
   RealtimeChannel? _subscription;
   List<Map<String, dynamic>> _observations = [];
   bool _isLoading = true;
@@ -42,8 +43,20 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
     _setupRealtime();
   }
 
-  void _setupRealtime() {
+  void _setupRealtime() async {
     if (widget.isExpertOnly) return; // Only notify global queue viewers
+
+    try {
+      final res = await Supabase.instance.client
+          .from('observations')
+          .select('observation_id')
+          .eq('under_verification', true)
+          .eq('verification_result', 'PENDING');
+      for (var rawRow in res as List<dynamic>) {
+        final row = rawRow as Map<String, dynamic>;
+        _knownQueuedIds.add(row['observation_id'].toString());
+      }
+    } catch (_) {}
 
     _subscription = Supabase.instance.client
         .channel('public:observations')
@@ -53,55 +66,65 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
           table: 'observations',
           callback: (payload) {
             final newRow = payload.newRecord;
-            if (newRow['under_verification'] == true && newRow['verification_result'] == 'PENDING') {
-              if (mounted) {
-                ScaffoldMessenger.of(context).clearSnackBars();
-                final screenWidth = MediaQuery.of(context).size.width;
-                final leftMargin = screenWidth > 400 ? screenWidth - 360.0 : 16.0;
+            final obsId = newRow['observation_id'].toString();
+            final isQueued = newRow['under_verification'] == true && newRow['verification_result'] == 'PENDING';
+            
+            if (isQueued) {
+              if (!_knownQueuedIds.contains(obsId)) {
+                _knownQueuedIds.add(obsId);
+                if (mounted) {
+                  if (ModalRoute.of(context)?.isCurrent == true) {
+                    ScaffoldMessenger.of(context).clearSnackBars();
+                    final screenWidth = MediaQuery.of(context).size.width;
+                    final leftMargin = screenWidth > 400 ? screenWidth - 360.0 : 16.0;
 
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Row(
-                      children: [
-                        const Icon(
-                          Icons.notifications_active_outlined,
-                          color: Colors.white,
-                          size: 20,
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Row(
+                          children: [
+                            const Icon(
+                              Icons.notifications_active_outlined,
+                              color: Colors.white,
+                              size: 20,
+                            ),
+                            const SizedBox(width: 12.0),
+                            const Expanded(
+                              child: Text(
+                                'A new observation has been queued for verification!',
+                                style: TextStyle(fontWeight: FontWeight.w500, color: Colors.white),
+                              ),
+                            ),
+                            const SizedBox(width: 8.0),
+                            IconButton(
+                              icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 18),
+                              onPressed: () {
+                                ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                              },
+                              padding: EdgeInsets.zero,
+                              constraints: const BoxConstraints(),
+                              splashRadius: 16.0,
+                            ),
+                          ],
                         ),
-                        const SizedBox(width: 12.0),
-                        const Expanded(
-                          child: Text(
-                            'A new observation has been queued for verification!',
-                            style: TextStyle(fontWeight: FontWeight.w500, color: Colors.white),
-                          ),
+                        backgroundColor: Colors.blue[800],
+                        behavior: SnackBarBehavior.floating,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10.0),
                         ),
-                        const SizedBox(width: 8.0),
-                        IconButton(
-                          icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 18),
-                          onPressed: () {
-                            ScaffoldMessenger.of(context).hideCurrentSnackBar();
-                          },
-                          padding: EdgeInsets.zero,
-                          constraints: const BoxConstraints(),
-                          splashRadius: 16.0,
+                        margin: EdgeInsets.only(
+                          bottom: 24,
+                          right: 16,
+                          left: leftMargin,
                         ),
-                      ],
-                    ),
-                    backgroundColor: Colors.blue[800],
-                    behavior: SnackBarBehavior.floating,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10.0),
-                    ),
-                    margin: EdgeInsets.only(
-                      bottom: 24,
-                      right: 16,
-                      left: leftMargin,
-                    ),
-                    duration: const Duration(seconds: 5),
-                  ),
-                );
-              }
+                        duration: const Duration(seconds: 5),
+                      ),
+                    );
+                  }
+                }
             }
+          } else {
+            _knownQueuedIds.remove(obsId);
+          }
           },
         )
         .subscribe();
@@ -132,17 +155,21 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
     }
   }
 
-  Future<void> _fetchObservations({bool resetPage = false}) async {
+  Future<void> _fetchObservations({bool resetPage = false, bool isSilent = false}) async {
     if (!mounted) return;
     
     if (resetPage) {
       _currentPage = 0;
     }
 
-    setState(() {
-      _isLoading = true;
-      _error = null;
-    });
+    if (!isSilent) {
+      setState(() {
+        _isLoading = true;
+        _error = null;
+      });
+    } else {
+      setState(() => _error = null);
+    }
 
     try {
       final user = Supabase.instance.client.auth.currentUser;
@@ -612,9 +639,13 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
             const evaluationMethod = 'MANUAL';
             final imageUrl = obs['image_url']?.toString();
             final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
-            final contributorName = obs['users'] != null && obs['users'] is Map
-                ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
-                : 'Unknown User';
+            final isPublic = obs['is_public'] == true;
+            final isAnonymous = obs['is_anonymous'] == true;
+            final contributorName = (isPublic && isAnonymous)
+                ? 'Anonymous Scout'
+                : (obs['users'] != null && obs['users'] is Map
+                    ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
+                    : 'Unknown User');
 
             return Card(
               elevation: 2,
@@ -638,9 +669,12 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                     if (value == true && !widget.isExpertOnly) {
                       setState(() {
                         _observations.removeWhere((item) => item['observation_id'] == obs['observation_id']);
+                        if (_totalCount > 0) _totalCount--;
                       });
+                      _fetchObservations(isSilent: true);
+                    } else if (value == true) {
+                      _fetchObservations(isSilent: true);
                     }
-                    _fetchObservations();
                   });
                 },
                 child: Row(
