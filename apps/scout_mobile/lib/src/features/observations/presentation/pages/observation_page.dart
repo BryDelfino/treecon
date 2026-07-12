@@ -2,9 +2,9 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'dart:typed_data';
 import 'package:shared_services/shared_services.dart';
 import 'package:scout_mobile/src/core/services/network_service.dart';
+import 'package:intl/intl.dart';
 import '../../data/observation_local_db.dart';
 import 'add_observation_page.dart';
 import 'observation_details_page.dart';
@@ -25,6 +25,8 @@ class _ObservationPageState extends State<ObservationPage> {
 
   // Sync state
   final Set<String> _syncingIds = {};
+  final Map<String, double> _syncProgress = {};
+  final Map<String, String> _syncStatusText = {};
   bool _isBulkSyncing = false;
   int _bulkSyncCompleted = 0;
   int _bulkSyncTotal = 0;
@@ -32,6 +34,10 @@ class _ObservationPageState extends State<ObservationPage> {
   // Filter state
   DateTime? _filterStartDate;
   DateTime? _filterEndDate;
+  String _filterVerificationState = 'All'; // All, Verified, Unverified
+  String _filterVerificationStatus = 'All'; // All, Pending, Approved, Rejected
+  String _filterVisibility = 'All'; // All, Public, Private
+  String _filterStorage = 'All'; // All, Local Only, Synced Only
 
   late final StreamSubscription<bool> _networkSub;
 
@@ -72,8 +78,10 @@ class _ObservationPageState extends State<ObservationPage> {
           'sync_status': e.syncStatus,
           'image_path': e.imagePath,
           'final_severity': 'healthy',
-          'capture_method': e.source.toUpperCase(),
+          'source': e.source.toUpperCase(),
           'evaluation_method': 'MANUAL',
+          'is_public': e.isPublic,
+          'is_anonymous': e.isAnonymous,
           'is_local': true,
         };
       }).toList();
@@ -89,6 +97,7 @@ class _ObservationPageState extends State<ObservationPage> {
               .from('observations')
               .select('*, verifier:users!observations_verifier_id_fkey(user_name)')
               .eq('user_id', user.id)
+              .or('is_deleted.eq.false,is_deleted.is.null')
               .order('observation_timestamp', ascending: false);
 
           remoteList = (data as List<dynamic>).map((e) {
@@ -122,17 +131,33 @@ class _ObservationPageState extends State<ObservationPage> {
     }
   }
 
-  Future<void> _syncSingleObservation(String observationId) async {
+  Future<bool> _syncSingleObservation(String observationId, {bool isBulk = false}) async {
     final user = Supabase.instance.client.auth.currentUser;
     if (user == null || !NetworkService.instance.isOnline) {
-      _showToast('Sign in and connect to internet to sync.');
-      return;
+      if (!isBulk) _showToast('Sign in and connect to internet to sync.');
+      return false;
     }
 
-    if (_syncingIds.contains(observationId)) return;
+    if (_syncingIds.contains(observationId)) return false;
 
     setState(() {
       _syncingIds.add(observationId);
+      _syncProgress[observationId] = 0.0;
+      _syncStatusText[observationId] = 'Starting...';
+    });
+
+    Timer? progressTimer;
+    progressTimer = Timer.periodic(const Duration(milliseconds: 100), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      setState(() {
+        final current = _syncProgress[observationId] ?? 0.0;
+        if (current < 0.85) {
+          _syncProgress[observationId] = current + 0.015; // Slow ramp up to 85%
+        }
+      });
     });
 
     try {
@@ -142,6 +167,7 @@ class _ObservationPageState extends State<ObservationPage> {
       String? remoteImageUrl;
 
       // 1. Upload image
+      if (mounted) setState(() { _syncStatusText[observationId] = 'Uploading Image...'; });
       if (obs.imagePath != null && obs.imagePath!.isNotEmpty) {
         final file = File(obs.imagePath!);
         if (await file.exists()) {
@@ -170,6 +196,12 @@ class _ObservationPageState extends State<ObservationPage> {
       }
 
       // 2. Insert to Postgres
+      if (mounted) {
+        setState(() {
+          _syncProgress[observationId] = 0.90;
+          _syncStatusText[observationId] = 'Saving Data...';
+        });
+      }
       try {
         await Supabase.instance.client.from('observations').insert({
           'observation_id': obs.observationId,
@@ -180,6 +212,8 @@ class _ObservationPageState extends State<ObservationPage> {
           'upload_timestamp': DateTime.now().toUtc().toIso8601String(),
           'source': obs.source.toUpperCase(),
           'sync_status': 'UPLOADED',
+          'is_public': obs.isPublic,
+          'is_anonymous': obs.isAnonymous,
         }).select().timeout(const Duration(seconds: 15));
       } on PostgrestException catch (pe) {
         if (pe.code != '23505') {
@@ -201,17 +235,31 @@ class _ObservationPageState extends State<ObservationPage> {
       }
 
       if (mounted) {
-        _showToast('Observation synced successfully!', isError: false);
-        await _fetchObservations();
+        setState(() {
+          _syncProgress[observationId] = 1.0;
+          _syncStatusText[observationId] = 'Done!';
+        });
+        await Future.delayed(const Duration(milliseconds: 400)); // Show 100% briefly
+        if (!isBulk) {
+          _showToast('Observation synced successfully!', isError: false);
+          await _fetchObservations();
+        }
       }
+      return true;
     } catch (e) {
       await ObservationLocalDb.instance.markFailed(observationId);
-      _showToast('Sync failed: $e');
-      if (mounted) await _fetchObservations();
+      if (!isBulk) {
+        _showToast('Sync failed: $e');
+        if (mounted) await _fetchObservations();
+      }
+      return false;
     } finally {
-      if (mounted) {
+      progressTimer.cancel();
+      if (mounted && !isBulk) {
         setState(() {
           _syncingIds.remove(observationId);
+          _syncProgress.remove(observationId);
+          _syncStatusText.remove(observationId);
         });
       }
     }
@@ -237,8 +285,10 @@ class _ObservationPageState extends State<ObservationPage> {
       _bulkSyncTotal = pendingIds.length;
     });
 
+    int successCount = 0;
     for (final id in pendingIds) {
-      await _syncSingleObservation(id);
+      final success = await _syncSingleObservation(id, isBulk: true);
+      if (success) successCount++;
       if (mounted) {
         setState(() {
           _bulkSyncCompleted++;
@@ -249,29 +299,68 @@ class _ObservationPageState extends State<ObservationPage> {
     if (mounted) {
       setState(() {
         _isBulkSyncing = false;
+        _syncingIds.clear();
+        _syncProgress.clear();
+        _syncStatusText.clear();
       });
-      _showToast('All observations synced!', isError: false);
+      if (successCount == 1) {
+        _showToast('Observation synced successfully!', isError: false);
+      } else if (successCount > 1) {
+        _showToast('$successCount observations synced successfully!', isError: false);
+      }
+      await _fetchObservations();
     }
   }
 
-  // Date filter logic
-  List<Map<String, dynamic>> _applyDateFilter(List<Map<String, dynamic>> observations) {
-    if (_filterStartDate == null && _filterEndDate == null) return observations;
+  // Filter logic
+  List<Map<String, dynamic>> _applyFilters(List<Map<String, dynamic>> observations, {required bool isLocal}) {
+    if (_filterStorage == 'Local Only' && !isLocal) return [];
+    if (_filterStorage == 'Synced Only' && isLocal) return [];
+
     return observations.where((obs) {
+      // Date filter
       final ts = obs['timestamp'];
-      if (ts == null) return true;
-      final date = DateTime.tryParse(ts);
-      if (date == null) return true;
-      if (_filterStartDate != null && date.isBefore(_filterStartDate!)) return false;
-      if (_filterEndDate != null && date.isAfter(_filterEndDate!.add(const Duration(days: 1)))) return false;
+      if (ts != null) {
+        final date = DateTime.tryParse(ts);
+        if (date != null) {
+          if (_filterStartDate != null && date.isBefore(_filterStartDate!)) return false;
+          if (_filterEndDate != null && date.isAfter(_filterEndDate!.add(const Duration(days: 1)))) return false;
+        }
+      }
+
+      // Verification filter
+      final verificationResult = obs['verification_result']?.toString();
+      final underVerification = obs['under_verification'] == true;
+      final isVerified = underVerification || verificationResult != null;
+
+      if (_filterVerificationState != 'All') {
+        if (_filterVerificationState == 'Unverified' && isVerified) return false;
+        if (_filterVerificationState == 'Verified' && !isVerified) return false;
+      }
+
+      if (_filterVerificationState != 'Unverified' && _filterVerificationStatus != 'All') {
+        if (_filterVerificationStatus == 'Pending' && !underVerification) return false;
+        if (_filterVerificationStatus == 'Approved' && verificationResult != 'APPROVED') return false;
+        if (_filterVerificationStatus == 'Rejected' && verificationResult != 'REJECTED') return false;
+      }
+
+      // Visibility filter
+      if (_filterVisibility != 'All') {
+        final isPublic = obs['is_public'] == true;
+        if (_filterVisibility == 'Public' && !isPublic) return false;
+        if (_filterVisibility == 'Private' && isPublic) return false;
+      }
+
       return true;
     }).toList();
   }
 
-  void _showDateFilterSheet() {
+  void _showFilterSheet() {
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.white,
+      isScrollControlled: true,
+      useSafeArea: true,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
@@ -279,7 +368,7 @@ class _ObservationPageState extends State<ObservationPage> {
         return StatefulBuilder(
           builder: (context, setModalState) {
             return Padding(
-              padding: const EdgeInsets.all(24),
+              padding: EdgeInsets.fromLTRB(24, 24, 24, MediaQuery.of(context).viewInsets.bottom + 24),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -289,81 +378,249 @@ class _ObservationPageState extends State<ObservationPage> {
                       Icon(Icons.filter_list_rounded, color: Colors.green[700]),
                       const SizedBox(width: 8),
                       const Text(
-                        'Filter by Date',
+                        'Filter Observations',
                         style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                       ),
                     ],
                   ),
                   const Divider(height: 24),
-                  ListTile(
-                    leading: Icon(Icons.calendar_today, color: Colors.green[700]),
-                    title: Text(
-                      _filterStartDate != null
-                          ? 'From: ${_filterStartDate!.toLocal().toString().substring(0, 10)}'
-                          : 'From: Any',
+                  Flexible(
+                    child: SingleChildScrollView(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // Storage Filter
+                          InputDecorator(
+                            decoration: InputDecoration(
+                              labelText: 'Storage State',
+                              prefixIcon: Icon(Icons.storage, color: Colors.green[700]),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: _filterStorage,
+                                isExpanded: true,
+                                items: ['All', 'Local Only', 'Synced Only'].map((String value) {
+                                  return DropdownMenuItem<String>(
+                                    value: value,
+                                    child: Text(value),
+                                  );
+                                }).toList(),
+                                onChanged: (val) {
+                                  if (val != null) {
+                                    setModalState(() {
+                                      _filterStorage = val;
+                                      if (val == 'Local Only') {
+                                        _filterVerificationState = 'All';
+                                        _filterVerificationStatus = 'All';
+                                        _filterVisibility = 'All';
+                                      }
+                                    });
+                                    setState(() {
+                                      _filterStorage = val;
+                                      if (val == 'Local Only') {
+                                        _filterVerificationState = 'All';
+                                        _filterVerificationStatus = 'All';
+                                        _filterVisibility = 'All';
+                                      }
+                                    });
+                                  }
+                                },
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          // Verification State Filter
+                          InputDecorator(
+                            decoration: InputDecoration(
+                              labelText: 'Verification State',
+                              prefixIcon: Icon(Icons.verified_outlined, color: _filterStorage == 'Local Only' ? Colors.grey : Colors.green[700]),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: _filterVerificationState,
+                                isExpanded: true,
+                                items: ['All', 'Verified', 'Unverified'].map((String value) {
+                                  return DropdownMenuItem<String>(
+                                    value: value,
+                                    child: Text(value),
+                                  );
+                                }).toList(),
+                                onChanged: _filterStorage == 'Local Only' ? null : (val) {
+                                  if (val != null) {
+                                    setModalState(() {
+                                      _filterVerificationState = val;
+                                      if (val == 'Unverified') _filterVerificationStatus = 'All';
+                                    });
+                                    setState(() {
+                                      _filterVerificationState = val;
+                                      if (val == 'Unverified') _filterVerificationStatus = 'All';
+                                    });
+                                  }
+                                },
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          // Verification Status Filter
+                          InputDecorator(
+                            decoration: InputDecoration(
+                              labelText: 'Verification Status',
+                              prefixIcon: Icon(Icons.fact_check_outlined, color: (_filterStorage == 'Local Only' || _filterVerificationState == 'Unverified') ? Colors.grey : Colors.green[700]),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: _filterVerificationStatus,
+                                isExpanded: true,
+                                items: ['All', 'Pending', 'Approved', 'Rejected'].map((String value) {
+                                  return DropdownMenuItem<String>(
+                                    value: value,
+                                    child: Text(value),
+                                  );
+                                }).toList(),
+                                onChanged: (_filterStorage == 'Local Only' || _filterVerificationState == 'Unverified') ? null : (val) {
+                                  if (val != null) {
+                                    setModalState(() {
+                                      _filterVerificationStatus = val;
+                                      if (val == 'Rejected') _filterVisibility = 'All';
+                                    });
+                                    setState(() {
+                                      _filterVerificationStatus = val;
+                                      if (val == 'Rejected') _filterVisibility = 'All';
+                                    });
+                                  }
+                                },
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          // Visibility Filter
+                          InputDecorator(
+                            decoration: InputDecoration(
+                              labelText: 'Visibility',
+                              prefixIcon: Icon(Icons.public, color: (_filterStorage == 'Local Only' || _filterVerificationStatus == 'Rejected') ? Colors.grey : Colors.green[700]),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: _filterVisibility,
+                                isExpanded: true,
+                                items: ['All', 'Public', 'Private'].map((String value) {
+                                  return DropdownMenuItem<String>(
+                                    value: value,
+                                    child: Text(value),
+                                  );
+                                }).toList(),
+                                onChanged: (_filterStorage == 'Local Only' || _filterVerificationStatus == 'Rejected') ? null : (val) {
+                                  if (val != null) {
+                                    setModalState(() => _filterVisibility = val);
+                                    setState(() => _filterVisibility = val);
+                                  }
+                                },
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          // Date Filters
+                          ListTile(
+                            leading: Icon(Icons.calendar_today, color: Colors.green[700]),
+                            title: Text(
+                              _filterStartDate != null
+                                  ? 'From: ${_filterStartDate!.toLocal().toString().substring(0, 10)}'
+                                  : 'From: Any Date',
+                            ),
+                            onTap: () async {
+                              final picked = await showDatePicker(
+                                context: context,
+                                initialDate: _filterStartDate ?? DateTime.now(),
+                                firstDate: DateTime(2020),
+                                lastDate: DateTime.now(),
+                              );
+                              if (picked != null) {
+                                setModalState(() {});
+                                setState(() => _filterStartDate = picked);
+                              }
+                            },
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey[300]!)),
+                          ),
+                          const SizedBox(height: 8),
+                          ListTile(
+                            leading: Icon(Icons.event, color: Colors.green[700]),
+                            title: Text(
+                              _filterEndDate != null
+                                  ? 'To: ${_filterEndDate!.toLocal().toString().substring(0, 10)}'
+                                  : 'To: Any Date',
+                            ),
+                            onTap: () async {
+                              final picked = await showDatePicker(
+                                context: context,
+                                initialDate: _filterEndDate ?? DateTime.now(),
+                                firstDate: DateTime(2020),
+                                lastDate: DateTime.now(),
+                              );
+                              if (picked != null) {
+                                setModalState(() {});
+                                setState(() => _filterEndDate = picked);
+                              }
+                            },
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey[300]!)),
+                          ),
+                        ],
+                      ),
                     ),
-                    onTap: () async {
-                      final picked = await showDatePicker(
-                        context: context,
-                        initialDate: _filterStartDate ?? DateTime.now(),
-                        firstDate: DateTime(2020),
-                        lastDate: DateTime.now(),
-                      );
-                      if (picked != null) {
-                        setModalState(() {});
-                        setState(() => _filterStartDate = picked);
-                      }
-                    },
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   ),
-                  ListTile(
-                    leading: Icon(Icons.event, color: Colors.green[700]),
-                    title: Text(
-                      _filterEndDate != null
-                          ? 'To: ${_filterEndDate!.toLocal().toString().substring(0, 10)}'
-                          : 'To: Any',
-                    ),
-                    onTap: () async {
-                      final picked = await showDatePicker(
-                        context: context,
-                        initialDate: _filterEndDate ?? DateTime.now(),
-                        firstDate: DateTime(2020),
-                        lastDate: DateTime.now(),
-                      );
-                      if (picked != null) {
-                        setModalState(() {});
-                        setState(() => _filterEndDate = picked);
-                      }
-                    },
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  const SizedBox(height: 16),
-                  OutlinedButton.icon(
-                    onPressed: () {
-                      setState(() {
-                        _filterStartDate = null;
-                        _filterEndDate = null;
-                      });
-                      Navigator.pop(context);
-                    },
-                    icon: const Icon(Icons.clear),
-                    label: const Text('Clear Filters'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.grey[700],
-                      side: BorderSide(color: Colors.grey[300]!),
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  FilledButton(
-                    onPressed: () => Navigator.pop(context),
-                    style: FilledButton.styleFrom(
-                      backgroundColor: Colors.green[700],
-                      padding: const EdgeInsets.symmetric(vertical: 14),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    ),
-                    child: const Text('Apply', style: TextStyle(fontWeight: FontWeight.bold)),
+                  const SizedBox(height: 24),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton.icon(
+                          onPressed: () {
+                            setModalState(() {
+                              _filterStartDate = null;
+                              _filterEndDate = null;
+                              _filterVerificationState = 'All';
+                              _filterVerificationStatus = 'All';
+                              _filterVisibility = 'All';
+                              _filterStorage = 'All';
+                            });
+                            setState(() {
+                              _filterStartDate = null;
+                              _filterEndDate = null;
+                              _filterVerificationState = 'All';
+                              _filterVerificationStatus = 'All';
+                              _filterVisibility = 'All';
+                              _filterStorage = 'All';
+                            });
+                          },
+                          icon: const Icon(Icons.clear),
+                          label: const Text('Clear'),
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: Colors.grey[700],
+                            side: BorderSide(color: Colors.grey[300]!),
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: () => Navigator.pop(context),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: Colors.green[700],
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          child: const Text('Apply', style: TextStyle(fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -374,72 +631,11 @@ class _ObservationPageState extends State<ObservationPage> {
     );
   }
 
-  Map<String, double>? _parseCoordinates(dynamic coords) {
-    if (coords == null) return null;
-    if (coords is Map) {
-      final map = coords.cast<String, dynamic>();
-      final list = map['coordinates'];
-      if (list is List && list.length >= 2) {
-        return {
-          'lng': (list[0] as num).toDouble(),
-          'lat': (list[1] as num).toDouble(),
-        };
-      }
-    } else if (coords is String) {
-      final trimmed = coords.trim();
 
-      // Check if it is a hex string (WKB/EWKB format)
-      final hexRegex = RegExp(r'^(0x)?[0-9a-fA-F]+$');
-      if (hexRegex.hasMatch(trimmed)) {
-        return _parseEWKB(trimmed);
-      }
-
-      final match = RegExp(r'POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)', caseSensitive: false).firstMatch(trimmed);
-      if (match != null) {
-        return {
-          'lng': double.tryParse(match.group(1) ?? '') ?? 0.0,
-          'lat': double.tryParse(match.group(2) ?? '') ?? 0.0,
-        };
-      }
-    }
-    return null;
-  }
-
-  Map<String, double>? _parseEWKB(String hex) {
-    try {
-      String cleanHex = hex.startsWith('0x') ? hex.substring(2) : hex;
-      if (cleanHex.length < 42) return null;
-
-      final byteOrder = cleanHex.substring(0, 2);
-      final isLittleEndian = byteOrder == '01';
-
-      final typeHex = cleanHex.substring(2, 10);
-      final hasSrid = typeHex.toLowerCase() == '01000020' || typeHex.toLowerCase() == '20000001';
-
-      final int startX = hasSrid ? 18 : 10;
-      final int startY = hasSrid ? 34 : 26;
-
-      final double lng = _hexToDouble(cleanHex.substring(startX, startX + 16), isLittleEndian);
-      final double lat = _hexToDouble(cleanHex.substring(startY, startY + 16), isLittleEndian);
-
-      return {'lng': lng, 'lat': lat};
-    } catch (_) {
-      return null;
-    }
-  }
-
-  double _hexToDouble(String hex, bool isLittleEndian) {
-    final bytes = Uint8List(8);
-    for (int i = 0; i < 8; i++) {
-      final idx = isLittleEndian ? (i * 2) : ((7 - i) * 2);
-      bytes[i] = int.parse(hex.substring(idx, idx + 2), radix: 16);
-    }
-    return ByteData.sublistView(bytes).getFloat64(0, Endian.little);
-  }
 
   @override
   Widget build(BuildContext context) {
-    final hasActiveFilter = _filterStartDate != null || _filterEndDate != null;
+    final hasActiveFilter = _filterStartDate != null || _filterEndDate != null || _filterVerificationState != 'All' || _filterVerificationStatus != 'All' || _filterVisibility != 'All' || _filterStorage != 'All';
 
     return PopScope(
       canPop: false,
@@ -478,7 +674,7 @@ class _ObservationPageState extends State<ObservationPage> {
                 hasActiveFilter ? Icons.filter_list : Icons.filter_list_outlined,
                 color: hasActiveFilter ? Colors.amber[300] : Colors.white,
               ),
-              onPressed: _showDateFilterSheet,
+              onPressed: _showFilterSheet,
               tooltip: 'Filter by date',
             ),
           ],
@@ -496,11 +692,14 @@ class _ObservationPageState extends State<ObservationPage> {
               child: FloatingActionButton(
                 backgroundColor: Colors.green[700],
                 onPressed: () async {
-                  final success = await Navigator.push<bool>(
+                  final result = await Navigator.push<dynamic>(
                     context,
                     MaterialPageRoute(builder: (context) => const AddObservationPage()),
                   );
-                  if (success == true) {
+                  if (result is String) {
+                    await _fetchObservations();
+                    _syncSingleObservation(result);
+                  } else if (result == true) {
                     _fetchObservations();
                   }
                 },
@@ -604,8 +803,8 @@ class _ObservationPageState extends State<ObservationPage> {
       );
     }
 
-    final filteredLocal = _applyDateFilter(_localObservations);
-    final filteredRemote = _applyDateFilter(_remoteObservations);
+    final filteredLocal = _applyFilters(_localObservations, isLocal: true);
+    final filteredRemote = _applyFilters(_remoteObservations, isLocal: false);
     final isOnline = NetworkService.instance.isOnline;
     final isLoggedIn = Supabase.instance.client.auth.currentUser != null;
     final pendingLocal = filteredLocal.where((o) => o['sync_status'] != 'UPLOADED').toList();
@@ -640,22 +839,7 @@ class _ObservationPageState extends State<ObservationPage> {
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
       children: [
-        // Summary Stats Header
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 16.0),
-          decoration: BoxDecoration(
-            color: Colors.green[50],
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: [
-              _buildStatItem('Local', filteredLocal.length.toString(), Icons.phone_android, Colors.amber[800]!),
-              _buildStatItem('Synced', filteredRemote.length.toString(), Icons.cloud_done, Colors.blue[700]!),
-            ],
-          ),
-        ),
-        const SizedBox(height: 12),
+
 
         // Sync All Card
         if (pendingLocal.isNotEmpty && isOnline && isLoggedIn)
@@ -779,21 +963,38 @@ class _ObservationPageState extends State<ObservationPage> {
 
   Widget _buildObservationCard(Map<String, dynamic> obs, {required bool isLocal}) {
     final observationId = obs['observation_id']?.toString() ?? '';
-    final isSyncing = _syncingIds.contains(observationId);
-    final dateStr = obs['timestamp'] != null
-        ? DateTime.tryParse(obs['timestamp'])?.toLocal().toString().substring(0, 16) ?? obs['timestamp']
-        : 'N/A';
-    final coords = _parseCoordinates(obs['coordinates']);
-    final latStr = coords != null ? coords['lat']!.toStringAsFixed(6) : 'N/A';
-    final lngStr = coords != null ? coords['lng']!.toStringAsFixed(6) : 'N/A';
-    final captureMethod = obs['capture_method']?.toString() ?? 'UPLOAD';
-    final evaluationMethod = obs['evaluation_method']?.toString() ?? 'CNN';
-    final syncStatus = obs['sync_status']?.toString();
-
+    final rawTimestamp = obs['timestamp'];
+    final rawDate = rawTimestamp != null ? DateTime.tryParse(rawTimestamp.toString()) : null;
+    final dateStr = rawDate != null ? DateFormat.yMMMd().add_jm().format(rawDate.toLocal()) : 'Unknown Date';
     final imageUrl = obs['image_url']?.toString();
     final localImagePath = obs['image_path']?.toString();
 
-    final borderColor = isLocal ? Colors.amber[700]! : Colors.blue[600]!;
+    final verificationResult = obs['verification_result']?.toString();
+    final underVerification = obs['under_verification'] == true;
+    final isPublic = obs['is_public'] == true;
+    final remarks = obs['remarks']?.toString();
+
+    String verifyText = 'UNVERIFIED';
+    Color verifyBg = Colors.grey[100]!;
+    Color verifyTextCol = Colors.grey[700]!;
+    Color borderColor = isLocal ? Colors.amber[700]! : Colors.blue[600]!;
+
+    if (verificationResult == 'APPROVED') {
+      verifyText = 'APPROVED';
+      verifyBg = Colors.green[50]!;
+      verifyTextCol = Colors.green[800]!;
+      if (!isLocal) borderColor = Colors.green[600]!;
+    } else if (verificationResult == 'REJECTED') {
+      verifyText = 'REJECTED';
+      verifyBg = Colors.red[50]!;
+      verifyTextCol = Colors.red[800]!;
+      if (!isLocal) borderColor = Colors.red[600]!;
+    } else if (underVerification) {
+      verifyText = 'PENDING';
+      verifyBg = Colors.purple[50]!;
+      verifyTextCol = Colors.purple[800]!;
+      if (!isLocal) borderColor = Colors.purple[600]!;
+    }
 
     return Card(
       elevation: 2.0,
@@ -822,131 +1023,175 @@ class _ObservationPageState extends State<ObservationPage> {
             _fetchObservations();
           } else if (result == 'DELETED_SYSTEM' || result == 'VERIFICATION_REQUESTED') {
             _fetchObservations();
+          } else if (result == 'MODIFIED') {
+            setState(() {});
           }
         },
-        child: IntrinsicHeight(
-          child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        child: Column(
           children: [
-            // Color indicator border
-            Container(
-              width: 5,
-              decoration: BoxDecoration(
-                color: borderColor,
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(16),
-                  bottomLeft: Radius.circular(16),
+            IntrinsicHeight(
+              child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Color indicator border
+                Container(
+                  width: 5,
+                  decoration: BoxDecoration(
+                    color: borderColor,
+                    borderRadius: const BorderRadius.only(
+                      topLeft: Radius.circular(16),
+                      bottomLeft: Radius.circular(16),
+                    ),
+                  ),
                 ),
-              ),
-            ),
-            // Image thumbnail
-            ClipRRect(
-              child: SizedBox(
-                width: 95,
-                child: localImagePath != null && localImagePath.isNotEmpty
-                    ? Image.file(
-                        File(localImagePath),
-                        fit: BoxFit.cover,
-                        errorBuilder: (context, error, stackTrace) => Container(
-                          color: Colors.green[50],
-                          child: Icon(Icons.image_not_supported_outlined, color: Colors.green[200]),
+                // Image thumbnail
+                SizedBox(
+                  width: 95,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      Positioned.fill(
+                        child: ClipRRect(
+                          child: localImagePath != null && localImagePath.isNotEmpty
+                              ? Image.file(
+                                  File(localImagePath),
+                                  fit: BoxFit.cover,
+                                  errorBuilder: (context, error, stackTrace) => Container(
+                                    color: Colors.green[50],
+                                    child: Icon(Icons.image_not_supported_outlined, color: Colors.green[200]),
+                                  ),
+                                )
+                              : (imageUrl != null && imageUrl.isNotEmpty
+                                  ? Image.network(
+                                      imageUrl,
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (context, error, stackTrace) => Container(
+                                        color: Colors.green[50],
+                                        child: Icon(Icons.image_not_supported_outlined, color: Colors.green[200]),
+                                      ),
+                                    )
+                                  : Container(
+                                      color: Colors.green[50],
+                                      child: Icon(Icons.park_outlined, color: Colors.green[200], size: 36),
+                                    )),
                         ),
-                      )
-                    : (imageUrl != null && imageUrl.isNotEmpty
-                        ? Image.network(
-                            imageUrl,
-                            fit: BoxFit.cover,
-                            errorBuilder: (context, error, stackTrace) => Container(
-                              color: Colors.green[50],
-                              child: Icon(Icons.image_not_supported_outlined, color: Colors.green[200]),
-                            ),
-                          )
-                        : Container(
-                            color: Colors.green[50],
-                            child: Icon(Icons.park_outlined, color: Colors.green[200], size: 36),
-                          )),
-              ),
-            ),
-            // Details
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.all(14.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      ),
+                    ],
+                  ),
+                ),
+                // Details
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.all(14.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: isLocal ? Colors.amber[50] : Colors.blue[50],
-                            borderRadius: BorderRadius.circular(100),
-                          ),
-                          child: Text(
-                            isLocal ? (syncStatus ?? 'PENDING').toUpperCase() : 'SYNCED',
-                            style: TextStyle(
-                              fontSize: 11,
-                              fontWeight: FontWeight.bold,
-                              color: isLocal ? Colors.amber[800] : Colors.blue[700],
-                            ),
-                          ),
-                        ),
                         Text(
                           dateStr,
-                          style: TextStyle(fontSize: 11, color: Colors.grey[500]),
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
                         ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Icon(Icons.location_on_outlined, size: 14, color: Colors.green[700]),
-                        const SizedBox(width: 4),
-                        Expanded(
-                          child: Text(
-                            'Lat: $latStr, Lng: $lngStr',
-                            style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: Colors.black87),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 4,
+                          children: [
+    
+                            // Verification Badge
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: verifyBg,
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: verifyTextCol.withValues(alpha: 0.3)),
+                              ),
+                              child: Text(
+                                verifyText,
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w800,
+                                  color: verifyTextCol,
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                            ),
+                            // Privacy Badge
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: isPublic ? Colors.teal[50] : Colors.grey[100],
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: isPublic ? Colors.teal[200]! : Colors.grey[300]!),
+                              ),
+                              child: Text(
+                                isPublic ? 'PUBLIC' : 'PRIVATE',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w800,
+                                  color: isPublic ? Colors.teal[700] : Colors.grey[600],
+                                  letterSpacing: 0.5,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        if (remarks != null && remarks.trim().isNotEmpty) ...[
+                          const SizedBox(height: 10),
+                          Text(
+                            '💬 "${remarks.trim()}"',
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(fontSize: 12, color: Colors.grey[600], fontStyle: FontStyle.italic),
                           ),
-                        ),
+                        ],
                       ],
                     ),
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        Icon(Icons.camera_alt_outlined, size: 14, color: Colors.grey[600]),
-                        const SizedBox(width: 4),
-                        Text(
-                          'Method: $captureMethod ($evaluationMethod)',
-                          style: TextStyle(fontSize: 11, color: Colors.grey[600]),
-                        ),
-                      ],
-                    ),
-                  ],
+                  ),
                 ),
-              ),
+              ],
             ),
-            // Sync button (local only)
-            if (isLocal && NetworkService.instance.isOnline && Supabase.instance.client.auth.currentUser != null)
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: Center(
-                  child: isSyncing
-                      ? const SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: CircularProgressIndicator(color: Colors.green, strokeWidth: 2),
-                        )
-                      : IconButton(
-                          icon: Icon(Icons.cloud_upload_rounded, color: Colors.green[700]),
-                          onPressed: () => _syncSingleObservation(observationId),
-                          tooltip: 'Upload this observation',
+            ),
+            if (_syncingIds.contains(observationId))
+              ClipRRect(
+                borderRadius: const BorderRadius.only(bottomLeft: Radius.circular(16), bottomRight: Radius.circular(16)),
+                child: Container(
+                  color: Colors.green[50],
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _syncStatusText[observationId] ?? 'Syncing...',
+                              style: TextStyle(fontSize: 10, color: Colors.green[800], fontWeight: FontWeight.bold),
+                            ),
+                            const SizedBox(height: 6),
+                            LinearProgressIndicator(
+                              value: (_syncProgress[observationId] ?? 0.0).clamp(0.0, 1.0),
+                              backgroundColor: Colors.green[100],
+                              valueColor: AlwaysStoppedAnimation<Color>(Colors.green[700]!),
+                              minHeight: 6,
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                          ],
                         ),
+                      ),
+                      const SizedBox(width: 16),
+                      SizedBox(
+                        width: 35,
+                        child: Text(
+                          '${(((_syncProgress[observationId] ?? 0.0).clamp(0.0, 1.0)) * 100).toInt()}%',
+                          style: TextStyle(fontSize: 12, color: Colors.green[800], fontWeight: FontWeight.bold),
+                          textAlign: TextAlign.right,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
           ],
         ),
-      ),
       ),
     );
   }
@@ -961,35 +1206,6 @@ class _ObservationPageState extends State<ObservationPage> {
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
-    );
-  }
-
-  Widget _buildStatItem(String label, String value, IconData icon, Color color) {
-    return Row(
-      children: [
-        Container(
-          padding: const EdgeInsets.all(8.0),
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.1),
-            shape: BoxShape.circle,
-          ),
-          child: Icon(icon, color: color, size: 20),
-        ),
-        const SizedBox(width: 10),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              value,
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: color),
-            ),
-            Text(
-              label,
-              style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-            ),
-          ],
-        ),
-      ],
     );
   }
 }
