@@ -7,8 +7,10 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_services/shared_services.dart';
 import 'package:uuid/uuid.dart';
+import 'dart:async';
 import '../../data/cached_observation.dart';
 import '../../data/observation_local_db.dart';
+import 'package:scout_mobile/src/core/services/network_service.dart';
 
 class AddObservationPage extends StatefulWidget {
   const AddObservationPage({super.key});
@@ -22,12 +24,35 @@ class _AddObservationPageState extends State<AddObservationPage> {
   Position? _currentPosition;
   bool _isLoadingLocation = false;
   bool _isSaving = false;
+  bool _isPublic = true;
+  bool _isAnonymous = false;
+  bool _syncImmediately = false;
   final ImagePicker _picker = ImagePicker();
+  
+  bool _isOnline = true;
+  StreamSubscription<bool>? _networkSub;
 
   @override
   void initState() {
     super.initState();
+    _isOnline = NetworkService.instance.isOnline;
+    _networkSub = NetworkService.instance.onConnectivityChanged.listen((isOnline) {
+      if (mounted) {
+        setState(() {
+          _isOnline = isOnline;
+          if (!isOnline) {
+            _syncImmediately = false;
+          }
+        });
+      }
+    });
     _determinePosition();
+  }
+
+  @override
+  void dispose() {
+    _networkSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _determinePosition() async {
@@ -134,17 +159,21 @@ class _AddObservationPageState extends State<AddObservationPage> {
         imagePath: localImagePath,
         observationTimestamp: DateTime.now(),
         syncStatus: 'PENDING',
+        isPublic: _isPublic,
+        isAnonymous: _isAnonymous,
       );
 
       // 3. Save to local DB
       await ObservationLocalDb.instance.insertObservation(cachedObs);
 
       if (mounted) {
-        _showSnackBar(
-          'Observation saved locally.',
-          isError: false,
-        );
-        Navigator.of(context).pop(true);
+        if (!_syncImmediately) {
+          _showSnackBar(
+            'Observation saved locally.',
+            isError: false,
+          );
+        }
+        Navigator.of(context).pop(_syncImmediately ? uuid : true);
       }
     } catch (e) {
       _showSnackBar('Failed to save observation: $e', isError: true);
@@ -188,31 +217,7 @@ class _AddObservationPageState extends State<AddObservationPage> {
             // Image Preview container
             GestureDetector(
               onTap: () {
-                showModalBottomSheet(
-                  context: context,
-                  builder: (context) => SafeArea(
-                    child: Wrap(
-                      children: [
-                        ListTile(
-                          leading: const Icon(Icons.camera_alt),
-                          title: const Text('Take Photo'),
-                          onTap: () {
-                            Navigator.pop(context);
-                            _pickImage(ImageSource.camera);
-                          },
-                        ),
-                        ListTile(
-                          leading: const Icon(Icons.photo_library),
-                          title: const Text('Choose from Gallery'),
-                          onTap: () {
-                            Navigator.pop(context);
-                            _pickImage(ImageSource.gallery);
-                          },
-                        ),
-                      ],
-                    ),
-                  ),
-                );
+                _pickImage(ImageSource.camera);
               },
               child: Container(
                 height: 250,
@@ -241,7 +246,7 @@ class _AddObservationPageState extends State<AddObservationPage> {
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            'Camera or Gallery',
+                            'Camera Only',
                             style: TextStyle(color: Colors.green[400], fontSize: 13),
                           ),
                         ],
@@ -295,6 +300,45 @@ class _AddObservationPageState extends State<AddObservationPage> {
                     color: Colors.green[700],
                     onPressed: _isLoadingLocation ? null : _determinePosition,
                   ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 24),
+
+            // Settings
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: Colors.grey[200]!),
+              ),
+              child: Column(
+                children: [
+                  SwitchListTile(
+                    title: const Text('Public Observation', style: TextStyle(fontWeight: FontWeight.w600)),
+                    subtitle: const Text('Allow others to view this observation', style: TextStyle(fontSize: 12)),
+                    value: _isPublic,
+                    activeTrackColor: Colors.green[700],
+                    onChanged: (val) => setState(() => _isPublic = val),
+                  ),
+                  const Divider(height: 1),
+                  SwitchListTile(
+                    title: const Text('Submit Anonymously', style: TextStyle(fontWeight: FontWeight.w600)),
+                    subtitle: const Text('Hide your username from public view', style: TextStyle(fontSize: 12)),
+                    value: _isAnonymous,
+                    activeTrackColor: Colors.green[700],
+                    onChanged: (val) => setState(() => _isAnonymous = val),
+                  ),
+                  if (_isOnline) ...[
+                    const Divider(height: 1),
+                    SwitchListTile(
+                      title: const Text('Sync Immediately', style: TextStyle(fontWeight: FontWeight.w600)),
+                      subtitle: const Text('Upload to the system right after saving', style: TextStyle(fontSize: 12)),
+                      value: _syncImmediately,
+                      activeTrackColor: Colors.green[700],
+                      onChanged: (val) => setState(() => _syncImmediately = val),
+                    ),
+                  ],
                 ],
               ),
             ),
