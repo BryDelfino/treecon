@@ -23,6 +23,7 @@ class ObservationDetailsPage extends StatefulWidget {
 class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
   String? _selectedResult;
   final TextEditingController _remarksController = TextEditingController();
+  final _verificationFormKey = GlobalKey<FormState>();
   bool _isSubmitting = false;
   
   String? _province;
@@ -205,8 +206,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
   }
 
   Future<void> _submitVerification() async {
-    if (_selectedResult == null) {
-      _showToast('Please select a verification result.');
+    if (!(_verificationFormKey.currentState?.validate() ?? false)) {
       return;
     }
 
@@ -318,16 +318,16 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
     
     final isPublic = obs['is_public'] == true;
     final isAnonymous = obs['is_anonymous'] == true;
-    final contributorName = (isPublic && isAnonymous)
+    final isOwner = obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
+    final contributorName = (isPublic && isAnonymous && !isOwner)
         ? 'Anonymous Scout'
         : (obs['users'] != null && obs['users'] is Map
             ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
             : 'Unknown User');
-        
+
     final rawTimestamp = obs['observation_timestamp'] ?? obs['upload_timestamp'];
     final rawDate = rawTimestamp != null ? DateTime.tryParse(rawTimestamp.toString()) : null;
     final dateStr = rawDate != null ? DateFormat.yMMMd().add_jm().format(rawDate.toLocal()) : 'N/A';
-    final isOwner = obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
     final rawVerificationResult = obs['verification_result']?.toString() ?? 'NONE';
     final verificationResult = rawVerificationResult == 'APPROVED' ? 'Verified' : (rawVerificationResult == 'REJECTED' ? 'Rejected' : rawVerificationResult);
     final verifierName = obs['verifier'] != null && obs['verifier'] is Map 
@@ -442,7 +442,14 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                               children: [
                                 const Text('Metadata', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                                 const Divider(height: 24),
-                                _buildDetailRow(Icons.person, 'Observer', contributorName),
+                                _buildDetailRow(
+                                  Icons.person,
+                                  'Observer',
+                                  contributorName,
+                                  trailing: (isAnonymous && isOwner)
+                                      ? Icon(Icons.visibility_off_rounded, size: 14, color: Colors.purple[700])
+                                      : null,
+                                ),
                                 const SizedBox(height: 12),
                                 _buildDetailRow(Icons.calendar_today, 'Observation Timestamp', dateStr),
                                 if (isOwner) ...[
@@ -505,7 +512,9 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                             ),
                             child: Padding(
                               padding: const EdgeInsets.all(20.0),
-                              child: Column(
+                              child: Form(
+                                key: _verificationFormKey,
+                                child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.stretch,
                                 children: [
                                   Row(
@@ -534,6 +543,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                                         _selectedResult = val;
                                       });
                                     },
+                                    validator: (val) => val == null ? 'Please select a verification result.' : null,
                                   ),
                                   const SizedBox(height: 16),
                                   const Text('Remarks (Optional)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
@@ -558,6 +568,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                                     ),
                                   ),
                                 ],
+                                ),
                               ),
                             ),
                           ),
@@ -573,7 +584,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
     );
   }
 
-  Widget _buildDetailRow(IconData icon, String label, String value) {
+  Widget _buildDetailRow(IconData icon, String label, String value, {Widget? trailing}) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -585,7 +596,15 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
             children: [
               Text(label, style: TextStyle(fontSize: 12, color: Colors.grey[600], fontWeight: FontWeight.w600)),
               const SizedBox(height: 2),
-              Text(value, style: const TextStyle(fontSize: 14, color: Colors.black87)),
+              Row(
+                children: [
+                  Text(value, style: const TextStyle(fontSize: 14, color: Colors.black87)),
+                  if (trailing != null) ...[
+                    const SizedBox(width: 6),
+                    trailing,
+                  ],
+                ],
+              ),
             ],
           ),
         ),
