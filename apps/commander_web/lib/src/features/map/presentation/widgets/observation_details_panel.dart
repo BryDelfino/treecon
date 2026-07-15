@@ -158,7 +158,7 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
     }
     
     final isAnonymous = widget.obs['is_anonymous'] == true;
-    final contributorName = (isPublic && isAnonymous) 
+    final contributorName = (isPublic && isAnonymous && !isOwner)
         ? 'Anonymous Scout'
         : (widget.obs['users'] != null && widget.obs['users'] is Map
             ? (widget.obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
@@ -239,11 +239,18 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
                     const SizedBox(height: 16),
                   ],
                   
-                  _buildMetaRow(Icons.person, 'Observer', contributorName),
+                  _buildMetaRow(
+                    Icons.person,
+                    'Observer',
+                    contributorName,
+                    trailing: (isAnonymous && isOwner)
+                        ? Icon(Icons.visibility_off_rounded, size: 14, color: Colors.purple[700])
+                        : null,
+                  ),
                   _buildMetaRow(Icons.calendar_today, 'Observation Timestamp', dateStr),
                   _buildMetaRow(Icons.map, 'Province', _isLoadingProvince ? 'Loading...' : (_province ?? 'Unknown')),
                   if (isOwner)
-                    _buildMetaRow(Icons.location_on, 'Coordinates', '$latStr, $lngStr'),
+                    _buildMetaRow(Icons.location_on, 'Coordinates (Lat/Lng)', '$latStr, $lngStr'),
                   _buildMetaRow(Icons.cloud_upload, 'Upload Timestamp', uploadStr),
                   _buildMetaRow(
                     isVerified ? Icons.verified : (underVerification ? Icons.pending_actions : Icons.new_releases), 
@@ -300,7 +307,7 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
     );
   }
 
-  Widget _buildMetaRow(IconData icon, String label, String value, {Color? color}) {
+  Widget _buildMetaRow(IconData icon, String label, String value, {Color? color, Widget? trailing}) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8.0),
       child: Row(
@@ -314,7 +321,15 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
               children: [
                 Text(label, style: TextStyle(fontSize: 12, color: Colors.grey[600], fontWeight: FontWeight.bold)),
                 const SizedBox(height: 2),
-                Text(value, style: TextStyle(fontSize: 14, color: color ?? Colors.black87)),
+                Row(
+                  children: [
+                    Text(value, style: TextStyle(fontSize: 14, color: color ?? Colors.black87)),
+                    if (trailing != null) ...[
+                      const SizedBox(width: 6),
+                      trailing,
+                    ],
+                  ],
+                ),
               ],
             ),
           ),
