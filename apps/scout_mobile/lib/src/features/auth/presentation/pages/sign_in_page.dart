@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:core/core.dart';
 import 'package:shared_services/shared_services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:scout_mobile/src/core/services/network_service.dart';
 
 class SignInPage extends StatefulWidget {
   const SignInPage({super.key});
@@ -21,12 +22,23 @@ class _SignInPageState extends State<SignInPage> {
   bool _isNavigating = false;
   
   late final StreamSubscription<AuthState> _authSubscription;
+  late final StreamSubscription<bool> _networkSub;
   String? _username;
 
   @override
   void initState() {
     super.initState();
-    
+
+    // If connectivity drops while sitting on this page, fall back to
+    // offline mode instead of leaving the user stuck on a sign-in form
+    // that can't reach Supabase.
+    _networkSub = NetworkService.instance.onConnectivityChanged.listen((isOnline) {
+      if (!isOnline && !_isNavigating && mounted) {
+        _isNavigating = true;
+        Navigator.of(context).pushNamedAndRemoveUntil('/observations', (route) => false);
+      }
+    });
+
     // Listen to Auth state changes
     _authSubscription = Supabase.instance.client.auth.onAuthStateChange.listen((data) async {
       final user = data.session?.user;
@@ -92,6 +104,7 @@ class _SignInPageState extends State<SignInPage> {
   @override
   void dispose() {
     _authSubscription.cancel();
+    _networkSub.cancel();
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();

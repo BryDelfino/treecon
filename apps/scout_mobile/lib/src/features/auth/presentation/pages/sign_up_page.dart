@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:shared_services/shared_services.dart';
 import 'package:core/core.dart';
+import 'package:scout_mobile/src/core/services/network_service.dart';
 
 class SignUpPage extends StatefulWidget {
   const SignUpPage({super.key});
@@ -19,16 +21,29 @@ class _SignUpPageState extends State<SignUpPage> {
   bool _isLoading = false;
   bool _obscurePassword = true;
   bool _obscureConfirmPassword = true;
+  bool _isNavigating = false;
   late final UserService _userService;
+  late final StreamSubscription<bool> _networkSub;
 
   @override
   void initState() {
     super.initState();
     _userService = UserService(Supabase.instance.client);
+
+    // If connectivity drops while sitting on this page, fall back to
+    // offline mode instead of leaving the user stuck on a sign-up form
+    // that can't reach Supabase.
+    _networkSub = NetworkService.instance.onConnectivityChanged.listen((isOnline) {
+      if (!isOnline && !_isNavigating && mounted) {
+        _isNavigating = true;
+        Navigator.of(context).pushNamedAndRemoveUntil('/observations', (route) => false);
+      }
+    });
   }
 
   @override
   void dispose() {
+    _networkSub.cancel();
     _usernameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
