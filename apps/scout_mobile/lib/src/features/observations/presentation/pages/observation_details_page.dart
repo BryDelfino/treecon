@@ -9,13 +9,20 @@ import 'package:shared_services/shared_services.dart';
 import 'package:scout_mobile/src/core/services/network_service.dart';
 import 'package:intl/intl.dart';
 import 'package:scout_mobile/src/features/observations/data/observation_local_db.dart';
+import 'package:scout_mobile/src/features/map/presentation/pages/map_page.dart';
 import '../widgets/full_screen_image_viewer.dart';
 
 class ObservationDetailsPage extends StatefulWidget {
   final Map<String, dynamic> obs;
   final bool isCached;
+  final bool showViewOnMapButton;
 
-  const ObservationDetailsPage({super.key, required this.obs, this.isCached = false});
+  const ObservationDetailsPage({
+    super.key,
+    required this.obs,
+    this.isCached = false,
+    this.showViewOnMapButton = false,
+  });
 
   @override
   State<ObservationDetailsPage> createState() => _ObservationDetailsPageState();
@@ -154,9 +161,42 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
     super.dispose();
   }
 
-  void _showToast(String msg) {
+  void _showToast(String msg, {bool isError = true}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              isError ? Icons.error_outline_rounded : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 20,
+            ),
+            const SizedBox(width: 12.0),
+            Expanded(
+              child: Text(
+                msg,
+                style: const TextStyle(fontWeight: FontWeight.w500, color: Colors.white),
+              ),
+            ),
+            const SizedBox(width: 8.0),
+            IconButton(
+              icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 18),
+              onPressed: () => messenger.hideCurrentSnackBar(),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+              splashRadius: 16.0,
+            ),
+          ],
+        ),
+        backgroundColor: isError ? Colors.red[800] : Colors.green[800],
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12.0)),
+        margin: const EdgeInsets.all(16.0),
+      ),
+    );
   }
 
   Future<bool> _syncLatestState() async {
@@ -211,7 +251,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
             .update({'is_deleted': true})
             .eq('observation_id', id);
         if (mounted) {
-          _showToast('Observation deleted successfully.');
+          _showToast('Observation deleted successfully.', isError: false);
           Navigator.pop(context, 'DELETED_SYSTEM');
         }
       } catch (e) {
@@ -283,7 +323,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
           .eq('observation_id', id);
           
       if (mounted) {
-        _showToast('Verification requested successfully.');
+        _showToast('Verification requested successfully.', isError: false);
         setState(() {
           widget.obs['is_public'] = true;
           _isPublic = true;
@@ -343,7 +383,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
           .eq('observation_id', id);
           
       if (mounted) {
-        _showToast('Verification request cancelled.');
+        _showToast('Verification request cancelled.', isError: false);
         setState(() {
           widget.obs['under_verification'] = false;
           widget.obs['verification_result'] = null;
@@ -639,8 +679,28 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
 
 
               const SizedBox(height: 32),
-              
+
               // Action Buttons
+              if (widget.showViewOnMapButton) ...[
+                OutlinedButton.icon(
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => MapPage(highlightObservation: widget.obs),
+                      ),
+                    );
+                  },
+                  icon: const Icon(Icons.map_outlined),
+                  label: const Text('View on Map'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.green[700],
+                    side: BorderSide(color: Colors.green[700]!),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                ),
+                const SizedBox(height: 12),
+              ],
               if (widget.isCached)
                 ElevatedButton.icon(
                   onPressed: _isOnline ? _handleUpload : null,
