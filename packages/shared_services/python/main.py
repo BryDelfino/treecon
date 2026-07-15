@@ -2,7 +2,6 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pandas as pd
-import numpy as np
 import io
 import traceback
 import requests
@@ -100,24 +99,11 @@ async def process_dataset(file: UploadFile = File(...)):
         return 'Severe'
         
     df['severity_class'] = df['GSI'].apply(classify_gsi)
-    
-    # Raw data
-    raw_csv = df.to_csv(index=False)
-    
-    # Perturbed data
-    df_perturbed = df.copy()
-    df_perturbed = df_perturbed.drop(columns=['record_id'], errors='ignore')
-    
-    noise_lat = np.random.uniform(-0.005, 0.005, len(df_perturbed))
-    noise_lng = np.random.uniform(-0.005, 0.005, len(df_perturbed))
-    df_perturbed['latitude'] += noise_lat
-    df_perturbed['longitude'] += noise_lng
-    
-    perturbed_csv = df_perturbed.to_csv(index=False)
-    
+
+    csv = df.to_csv(index=False)
+
     return {
-        "raw_csv": raw_csv,
-        "perturbed_csv": perturbed_csv
+        "csv": csv
     }
 
 @app.get("/api/plantations")
