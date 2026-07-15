@@ -188,12 +188,38 @@ class _AddObservationPageState extends State<AddObservationPage> {
 
   void _showSnackBar(String message, {bool isError = false}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
       SnackBar(
-        content: Text(message),
+        content: Row(
+          children: [
+            Icon(
+              isError ? Icons.error_outline_rounded : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 20,
+            ),
+            const SizedBox(width: 12.0),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(fontWeight: FontWeight.w500, color: Colors.white),
+              ),
+            ),
+            const SizedBox(width: 8.0),
+            IconButton(
+              icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 18),
+              onPressed: () => messenger.hideCurrentSnackBar(),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+              splashRadius: 16.0,
+            ),
+          ],
+        ),
         backgroundColor: isError ? Colors.red[800] : Colors.green[800],
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12.0)),
+        margin: const EdgeInsets.all(16.0),
       ),
     );
   }
@@ -255,56 +281,6 @@ class _AddObservationPageState extends State<AddObservationPage> {
             ),
             const SizedBox(height: 24),
 
-            // Location Box
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.grey[50],
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.grey[200]!),
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: Colors.green[50],
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(Icons.location_on, color: Colors.green[700]),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'GPS Coordinates',
-                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
-                        ),
-                        const SizedBox(height: 4),
-                        if (_isLoadingLocation)
-                          const Text('Acquiring location...', style: TextStyle(color: Colors.grey))
-                        else if (_currentPosition != null)
-                          Text(
-                            'Lat: ${_currentPosition!.latitude.toStringAsFixed(6)}, Lng: ${_currentPosition!.longitude.toStringAsFixed(6)}',
-                            style: const TextStyle(fontWeight: FontWeight.w500),
-                          )
-                        else
-                          const Text('Location not available', style: TextStyle(color: Colors.red)),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    icon: const Icon(Icons.refresh),
-                    color: Colors.green[700],
-                    onPressed: _isLoadingLocation ? null : _determinePosition,
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 24),
-
             // Settings
             Container(
               decoration: BoxDecoration(
@@ -342,7 +318,28 @@ class _AddObservationPageState extends State<AddObservationPage> {
                 ],
               ),
             ),
-            const SizedBox(height: 40),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              decoration: BoxDecoration(
+                color: Colors.blue[50],
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.blue[100]!),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, color: Colors.blue[800]),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Privacy settings can be modified later from the observation\'s details page.',
+                      style: TextStyle(color: Colors.blue[900], fontSize: 13, fontWeight: FontWeight.w500),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 28),
 
             // Submit Button
             ElevatedButton(
