@@ -4,14 +4,12 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'dart:convert';
 import 'package:flutter/services.dart';
-import 'package:latlong2/latlong.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_services/shared_services.dart';
 import 'package:scout_mobile/src/core/services/network_service.dart';
 import 'package:intl/intl.dart';
 import 'package:scout_mobile/src/features/observations/data/observation_local_db.dart';
+import '../widgets/full_screen_image_viewer.dart';
 
 class ObservationDetailsPage extends StatefulWidget {
   final Map<String, dynamic> obs;
@@ -105,82 +103,21 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
 
   Future<void> _loadProvince() async {
     final coords = _parseCoordinates(widget.obs['coordinates']);
-    final double? lat = widget.obs['latitude'] ?? coords?['lat'];
-    final double? lng = widget.obs['longitude'] ?? coords?['lng'];
-    
+    final double? lat = widget.obs['latitude'] != null ? double.tryParse(widget.obs['latitude'].toString()) : coords?['lat'];
+    final double? lng = widget.obs['longitude'] != null ? double.tryParse(widget.obs['longitude'].toString()) : coords?['lng'];
+
     if (lat == null || lng == null) {
       if (mounted) setState(() { _province = 'Unknown'; _isLoadingProvince = false; });
       return;
     }
 
-    try {
-      final String geoJsonString = await rootBundle.loadString('assets/philippines.json');
-      final data = json.decode(geoJsonString);
-      final features = data['features'] as List;
-      final point = LatLng(lat, lng);
-
-      for (var feature in features) {
-        final props = feature['properties'];
-        final geometry = feature['geometry'];
-        if (geometry == null) continue;
-        final type = geometry['type'];
-        final coordsList = geometry['coordinates'] as List;
-
-        if (type == 'Polygon') {
-          final ring = coordsList[0] as List;
-          final points = ring.map((c) => LatLng((c[1] as num).toDouble(), (c[0] as num).toDouble())).toList();
-          if (_isPointInPolygon(point, points)) {
-            if (props != null && props['adm2_name'] != null && props['adm2_name'] != 'Special Geographic Area') {
-              if (mounted) setState(() { _province = props['adm2_name']; _isLoadingProvince = false; });
-              return;
-            }
-          }
-        } else if (type == 'MultiPolygon') {
-          for (var poly in coordsList) {
-            final ring = poly[0] as List;
-            final points = ring.map((c) => LatLng((c[1] as num).toDouble(), (c[0] as num).toDouble())).toList();
-            if (_isPointInPolygon(point, points)) {
-              if (props != null && props['adm2_name'] != null && props['adm2_name'] != 'Special Geographic Area') {
-                if (mounted) setState(() { _province = props['adm2_name']; _isLoadingProvince = false; });
-                return;
-              }
-            }
-          }
-        }
-      }
-      if (mounted) setState(() { _province = 'Unknown'; _isLoadingProvince = false; });
-    } catch (e) {
-      if (mounted) setState(() { _province = 'Unknown'; _isLoadingProvince = false; });
+    await ProvinceLookup.load();
+    if (mounted) {
+      setState(() {
+        _province = ProvinceLookup.provinceForPoint(lat, lng);
+        _isLoadingProvince = false;
+      });
     }
-  }
-
-  bool _isPointInPolygon(LatLng point, List<LatLng> polygon) {
-    int intersectCount = 0;
-    for (int j = 0; j < polygon.length - 1; j++) {
-      if (_rayCastIntersect(point, polygon[j], polygon[j + 1])) {
-        intersectCount++;
-      }
-    }
-    return (intersectCount % 2) == 1;
-  }
-
-  bool _rayCastIntersect(LatLng point, LatLng vertA, LatLng vertB) {
-    double aY = vertA.latitude;
-    double bY = vertB.latitude;
-    double aX = vertA.longitude;
-    double bX = vertB.longitude;
-    double pY = point.latitude;
-    double pX = point.longitude;
-
-    if ((aY > pY && bY > pY) || (aY < pY && bY < pY) || (aX < pX && bX < pX)) {
-      return false;
-    }
-
-    double m = (aY - bY) / (aX - bX);
-    double bee = (-aX) * m + aY;
-    double x = (pY - bee) / m;
-
-    return x > pX;
   }
 
   void _setupRealtime() {
@@ -228,12 +165,17 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
       final id = widget.obs['observation_id'];
       final latest = await Supabase.instance.client
           .from('observations')
-          .select('is_public, under_verification, verification_result, remarks, verification_timestamp, verifier:users!observations_verifier_id_fkey(user_name)')
+          .select('is_public, is_anonymous, under_verification, verification_result, remarks, verification_timestamp, verifier:users!observations_verifier_id_fkey(user_name)')
           .eq('observation_id', id)
           .maybeSingle();
       if (latest != null && mounted) {
+        final isRejected = latest['verification_result']?.toString().toUpperCase() == 'REJECTED';
         setState(() {
-          widget.obs['is_public'] = latest['is_public'];
+          final latestIsPublic = latest['is_public'] == true;
+          _isPublic = isRejected ? false : latestIsPublic;
+          _isAnonymous = latest['is_anonymous'] == true;
+          widget.obs['is_public'] = _isPublic;
+          widget.obs['is_anonymous'] = _isAnonymous;
           widget.obs['under_verification'] = latest['under_verification'];
           widget.obs['verification_result'] = latest['verification_result'];
           widget.obs['remarks'] = latest['remarks'];
@@ -250,6 +192,14 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
   }
 
   Future<void> _handleDelete() async {
+    final confirmed = await _showObservationConfirmation(
+      title: 'Delete this observation?',
+      message: 'This action cannot be undone.',
+      confirmLabel: 'Delete',
+    );
+    if (!confirmed) return;
+    if (!mounted) return;
+
     if (widget.isCached) {
       Navigator.pop(context, 'DELETE');
     } else {
@@ -273,6 +223,14 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
   }
 
   Future<void> _handleUpload() async {
+    final confirmed = await _showObservationConfirmation(
+      title: 'Sync this observation?',
+      message: 'This will upload the observation to the system.',
+      confirmLabel: 'Sync',
+    );
+    if (!confirmed) return;
+    if (!mounted) return;
+
     Navigator.pop(context, 'UPLOAD');
   }
 
@@ -403,6 +361,18 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
     final underVerification = widget.obs['under_verification'] == true;
     final id = widget.obs['observation_id'];
 
+    if (!_canManageObservationPrivacy(
+      isOwner: widget.obs['user_id'] == Supabase.instance.client.auth.currentUser?.id,
+      verificationResult: widget.obs['verification_result']?.toString(),
+    )) {
+      _showToast('Rejected observations cannot change their visibility settings.');
+      setState(() {
+        _isPublic = false;
+        _isAnonymous = widget.obs['is_anonymous'] == true;
+      });
+      return;
+    }
+
     if (widget.isCached) {
       setState(() {
         _isPublic = newPublic;
@@ -497,8 +467,8 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
     final uploadStr = rawUpload != null ? DateFormat.yMMMd().add_jm().format(rawUpload.toLocal()) : 'Not Uploaded Yet';
         
     final coords = _parseCoordinates(widget.obs['coordinates']);
-    final double? lat = widget.obs['latitude'] ?? coords?['lat'];
-    final double? lng = widget.obs['longitude'] ?? coords?['lng'];
+    final double? lat = widget.obs['latitude'] != null ? double.tryParse(widget.obs['latitude'].toString()) : coords?['lat'];
+    final double? lng = widget.obs['longitude'] != null ? double.tryParse(widget.obs['longitude'].toString()) : coords?['lng'];
     final latStr = lat != null ? lat.toStringAsFixed(6) : 'N/A';
     final lngStr = lng != null ? lng.toStringAsFixed(6) : 'N/A';
 
@@ -510,6 +480,10 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
     final imageUrl = widget.obs['image_url']?.toString();
     final localImagePath = widget.obs['image_path']?.toString();
     final isOwner = widget.obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
+    final canManagePrivacy = _canManageObservationPrivacy(
+      isOwner: isOwner,
+      verificationResult: rawVerificationResult,
+    );
 
     Color verifyColor = Colors.orange;
     
@@ -548,32 +522,38 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
             padding: const EdgeInsets.all(16.0),
             children: [
               // Image
-              ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: localImagePath != null && localImagePath.isNotEmpty && File(localImagePath).existsSync()
-                    ? Image.file(
-                        File(localImagePath),
-                        height: 250,
-                        width: double.infinity,
-                        fit: BoxFit.cover,
-                      )
-                    : (imageUrl != null && imageUrl.isNotEmpty
-                        ? Image.network(
-                            imageUrl,
-                            height: 250,
-                            width: double.infinity,
-                            fit: BoxFit.cover,
-                            errorBuilder: (context, error, stackTrace) => Container(
+              GestureDetector(
+                onTap: (localImagePath != null && localImagePath.isNotEmpty && File(localImagePath).existsSync()) ||
+                        (imageUrl != null && imageUrl.isNotEmpty)
+                    ? () => FullScreenImageViewer.show(context, imageUrl: imageUrl, localImagePath: localImagePath)
+                    : null,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: localImagePath != null && localImagePath.isNotEmpty && File(localImagePath).existsSync()
+                      ? Image.file(
+                          File(localImagePath),
+                          height: 250,
+                          width: double.infinity,
+                          fit: BoxFit.cover,
+                        )
+                      : (imageUrl != null && imageUrl.isNotEmpty
+                          ? Image.network(
+                              imageUrl,
+                              height: 250,
+                              width: double.infinity,
+                              fit: BoxFit.cover,
+                              errorBuilder: (context, error, stackTrace) => Container(
+                                height: 250,
+                                color: Colors.green[50],
+                                child: Icon(Icons.broken_image, color: Colors.green[200], size: 64),
+                              ),
+                            )
+                          : Container(
                               height: 250,
                               color: Colors.green[50],
-                              child: Icon(Icons.broken_image, color: Colors.green[200], size: 64),
-                            ),
-                          )
-                        : Container(
-                            height: 250,
-                            color: Colors.green[50],
-                            child: Icon(Icons.park_outlined, color: Colors.green[200], size: 64),
-                          )),
+                              child: Icon(Icons.park_outlined, color: Colors.green[200], size: 64),
+                            )),
+                ),
               ),
               const SizedBox(height: 24),
               
@@ -582,13 +562,8 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
               if (!widget.isCached)
                 _buildMetaRow(Icons.cloud_upload, 'Upload Timestamp', uploadStr),
               _buildMetaRow(Icons.location_on, 'Location', _isLoadingProvince ? 'Loading...' : _province),
-              if (isOwner)
-                _buildMetaRow(Icons.explore, 'Coordinates', '$latStr, $lngStr'),
-              _buildMetaRow(
-                Icons.analytics_outlined,
-                'Confidence Score',
-                widget.obs['confidence_score']?.toString() ?? 'N/A',
-              ),
+              if (isOwner || widget.isCached)
+                _buildMetaRow(Icons.explore, 'Coordinates (Lat/Lng)', '$latStr, $lngStr'),
               if (isVerified) ...[
                 const SizedBox(height: 16),
                 const Text('Expert Verification', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black87)),
@@ -623,7 +598,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                   ),
                 ),
               ],
-              if (isOwner && verificationResult != 'REJECTED') ...[
+              if (canManagePrivacy) ...[
                 const SizedBox(height: 16),
                 const Text('Privacy Settings', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Colors.black87)),
                 const SizedBox(height: 8),
@@ -753,4 +728,40 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
       ),
     );
   }
-}
+  // Helper function to check if user can manage observation privacy
+  bool _canManageObservationPrivacy({
+    required bool isOwner,
+    required String? verificationResult,
+  }) {
+    if (!isOwner) return false;
+    if (verificationResult?.toString().toUpperCase() == 'REJECTED') return false;
+    return true;
+  }
+
+  // Helper function to show confirmation dialog
+  Future<bool> _showObservationConfirmation({
+    required String title,
+    required String message,
+    required String confirmLabel,
+  }) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text(title),
+          content: Text(message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: Text(confirmLabel),
+            ),
+          ],
+        );
+      },
+    );
+    return result ?? false;
+  }}
