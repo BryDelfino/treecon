@@ -41,6 +41,7 @@ class _ObservationPageState extends State<ObservationPage> {
   String _filterStorage = 'All'; // All, Local Only, Synced Only
   String _filterProvince = 'All';
   bool _filterAnonymousOnly = false;
+  bool _sortAscending = false;
 
   late final StreamSubscription<bool> _networkSub;
 
@@ -443,7 +444,13 @@ class _ObservationPageState extends State<ObservationPage> {
       }
 
       return true;
-    }).toList();
+    }).toList()
+      ..sort((a, b) {
+        final aDate = DateTime.tryParse(a['timestamp']?.toString() ?? '');
+        final bDate = DateTime.tryParse(b['timestamp']?.toString() ?? '');
+        if (aDate == null || bDate == null) return 0;
+        return _sortAscending ? aDate.compareTo(bDate) : bDate.compareTo(aDate);
+      });
   }
 
   void _showFilterSheet() {
@@ -822,6 +829,14 @@ class _ObservationPageState extends State<ObservationPage> {
           actions: [
             IconButton(
               icon: Icon(
+                _sortAscending ? Icons.arrow_upward : Icons.arrow_downward,
+                color: Colors.white,
+              ),
+              onPressed: () => setState(() => _sortAscending = !_sortAscending),
+              tooltip: 'Sort by date of observation (Newest/Oldest first)',
+            ),
+            IconButton(
+              icon: Icon(
                 hasActiveFilter ? Icons.filter_list : Icons.filter_list_outlined,
                 color: hasActiveFilter ? Colors.amber[300] : Colors.white,
               ),
@@ -1123,6 +1138,7 @@ class _ObservationPageState extends State<ObservationPage> {
     final verificationResult = obs['verification_result']?.toString();
     final underVerification = obs['under_verification'] == true;
     final isPublic = obs['is_public'] == true;
+    final isAnonymous = obs['is_anonymous'] == true;
     final remarks = obs['remarks']?.toString();
 
     String verifyText = 'UNVERIFIED';
@@ -1164,6 +1180,7 @@ class _ObservationPageState extends State<ObservationPage> {
               builder: (context) => ObservationDetailsPage(
                 obs: obs,
                 isCached: isLocal,
+                showViewOnMapButton: true,
               ),
             ),
           );
@@ -1283,6 +1300,31 @@ class _ObservationPageState extends State<ObservationPage> {
                                 ),
                               ),
                             ),
+                            if (isAnonymous)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: Colors.purple[50],
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: Colors.purple[200]!),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.visibility_off_rounded, size: 11, color: Colors.purple[700]),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      'ANONYMOUS',
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w800,
+                                        color: Colors.purple[700],
+                                        letterSpacing: 0.5,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
                           ],
                         ),
                         if (remarks != null && remarks.trim().isNotEmpty) ...[
@@ -1349,13 +1391,38 @@ class _ObservationPageState extends State<ObservationPage> {
 
   void _showToast(String message, {bool isError = true}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).clearSnackBars();
-    ScaffoldMessenger.of(context).showSnackBar(
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
       SnackBar(
-        content: Text(message),
+        content: Row(
+          children: [
+            Icon(
+              isError ? Icons.error_outline_rounded : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 20,
+            ),
+            const SizedBox(width: 12.0),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(fontWeight: FontWeight.w500, color: Colors.white),
+              ),
+            ),
+            const SizedBox(width: 8.0),
+            IconButton(
+              icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 18),
+              onPressed: () => messenger.hideCurrentSnackBar(),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+              splashRadius: 16.0,
+            ),
+          ],
+        ),
         backgroundColor: isError ? Colors.red[800] : Colors.green[800],
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12.0)),
+        margin: const EdgeInsets.all(16.0),
       ),
     );
   }
