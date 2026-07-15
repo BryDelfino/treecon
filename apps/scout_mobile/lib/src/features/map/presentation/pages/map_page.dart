@@ -3,13 +3,12 @@ import 'dart:convert';
 
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle, SystemNavigator;
+import 'package:flutter/services.dart' show SystemNavigator;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_marker_cluster/flutter_map_marker_cluster.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:http/http.dart' as http;
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_services/shared_services.dart';
 import 'package:scout_mobile/src/core/services/network_service.dart';
 import 'package:intl/intl.dart';
@@ -24,7 +23,6 @@ class MapPage extends StatefulWidget {
 
 class _MapPageState extends State<MapPage> {
   final _mapController = MapController();
-  List<Polygon> _countryPolygons = [];
   List<Polygon> _caPolygons = [];
   List<Polygon> _krigingPolygons = [];
   bool _isLoading = true;
@@ -95,7 +93,6 @@ class _MapPageState extends State<MapPage> {
   String _selectedPlantationProvince = 'All';
   String _selectedPlantationSeverity = 'All';
   final List<String> _availableSeverities = ['All', 'Healthy', 'Low', 'Moderate', 'High', 'Severe'];
-  final Map<String, String> _provinceToRegion = {};
 
   // Observations state
   bool _showObservations = false;
@@ -131,7 +128,7 @@ class _MapPageState extends State<MapPage> {
         Navigator.of(context).popUntil((route) => route.isFirst);
       }
       final hasSession = Supabase.instance.client.auth.currentSession != null;
-      if (isOnline && hasSession && _countryPolygons.isEmpty && !_isCaLoading && !_isKrigingLoading) {
+      if (isOnline && hasSession && !ProvinceLookup.isLoaded && !_isCaLoading && !_isKrigingLoading) {
         setState(() {
           _isLoading = true;
         });
@@ -159,54 +156,12 @@ class _MapPageState extends State<MapPage> {
     return 'http://127.0.0.1:8000';
   }
 
-  // Loads the country boundary once and caches polygons
+  // Loads the country boundary once and caches province polygons
   Future<void> _loadCountryBoundary() async {
     try {
-      final String jsonString = await rootBundle.loadString('assets/philippines.json');
-      final Map<String, dynamic> geoJson = json.decode(jsonString);
-      final List<Polygon> polygons = [];
-
-      final List<dynamic> features = geoJson['features'] as List<dynamic>;
-      for (final dynamic feature in features) {
-        final f = feature as Map<String, dynamic>;
-        final Map<String, dynamic> geometry = f['geometry'] as Map<String, dynamic>;
-        final String geomType = geometry['type'] as String;
-
-        if (geomType == 'MultiPolygon') {
-          final List<dynamic> coordinates = geometry['coordinates'] as List<dynamic>;
-          for (final dynamic polygonData in coordinates) {
-            for (final dynamic ringData in polygonData as List<dynamic>) {
-              final List<LatLng> points = [];
-              for (final dynamic coord in ringData as List<dynamic>) {
-                final c = coord as List<dynamic>;
-                final double lng = (c[0] as num).toDouble();
-                final double lat = (c[1] as num).toDouble();
-                points.add(LatLng(lat, lng));
-              }
-              if (points.isNotEmpty) {
-                polygons.add(Polygon(points: points, hitValue: f['properties']));
-              }
-            }
-          }
-        } else if (geomType == 'Polygon') {
-          final List<dynamic> coordinates = geometry['coordinates'] as List<dynamic>;
-          for (final dynamic ringData in coordinates) {
-            final List<LatLng> points = [];
-            for (final dynamic coord in ringData as List<dynamic>) {
-              final c = coord as List<dynamic>;
-              final double lng = (c[0] as num).toDouble();
-              final double lat = (c[1] as num).toDouble();
-              points.add(LatLng(lat, lng));
-            }
-            if (points.isNotEmpty) {
-              polygons.add(Polygon(points: points, hitValue: f['properties']));
-            }
-          }
-        }
-      }
+      await ProvinceLookup.load();
       if (mounted) {
         setState(() {
-          _countryPolygons = polygons;
           _isLoading = false;
         });
       }
@@ -261,83 +216,7 @@ class _MapPageState extends State<MapPage> {
     return isInside;
   }
 
-  List<String> get _availableProvinces {
-    final Set<String> provinces = {'All'};
-    for (var poly in _countryPolygons) {
-      final props = poly.hitValue as Map<String, dynamic>?;
-      if (props != null) {
-        final name = props['adm2_name'] as String?;
-        final region = props['adm1_name'] as String?;
-        if (name != null) {
-          provinces.add(name);
-          if (region != null && region.isNotEmpty) {
-            _provinceToRegion[name] = region;
-          }
-        }
-      }
-    }
-    final list = provinces.toList();
-    list.sort((a, b) {
-      if (a == 'All') return -1;
-      if (b == 'All') return 1;
-      final regionA = _provinceToRegion[a] ?? '';
-      final regionB = _provinceToRegion[b] ?? '';
-      final regionCompare = regionA.compareTo(regionB);
-      if (regionCompare != 0) return regionCompare;
-      return a.compareTo(b);
-    });
-    return list;
-  }
-
-  List<DropdownMenuItem<String>> _buildProvinceDropdownItems() {
-    final items = <DropdownMenuItem<String>>[];
-    items.add(
-      const DropdownMenuItem(
-        value: 'All',
-        child: Text('All Provinces', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-      )
-    );
-    
-    final grouped = <String, List<String>>{};
-    for (final prov in _availableProvinces) {
-      if (prov == 'All') continue;
-      final region = _provinceToRegion[prov] ?? 'Other Regions';
-      grouped.putIfAbsent(region, () => []).add(prov);
-    }
-    
-    final sortedRegions = grouped.keys.toList()..sort();
-    for (final region in sortedRegions) {
-      items.add(
-        DropdownMenuItem(
-          value: 'HEADER_$region',
-          enabled: false,
-          child: Text(
-            region,
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.green.shade800),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        )
-      );
-      for (final prov in grouped[region]!) {
-        items.add(
-          DropdownMenuItem(
-            value: prov,
-            child: Padding(
-              padding: const EdgeInsets.only(left: 16.0),
-              child: Text(
-                prov, 
-                style: const TextStyle(fontSize: 12),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          )
-        );
-      }
-    }
-    return items;
-  }
+  List<DropdownMenuItem<String>> _buildProvinceDropdownItems() => ProvinceLookup.buildDropdownItems();
 
   List<Widget> _buildProvinceSelectedItems(BuildContext context) {
     return _buildProvinceDropdownItems().map((item) {
@@ -345,9 +224,9 @@ class _MapPageState extends State<MapPage> {
       if (item.value == 'All') return const Align(alignment: Alignment.centerLeft, child: Text('All Provinces', style: TextStyle(fontSize: 12)));
       final prov = item.value!;
       return Align(
-        alignment: Alignment.centerLeft, 
+        alignment: Alignment.centerLeft,
         child: Text(
-          prov, 
+          prov,
           style: const TextStyle(fontSize: 12),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
@@ -356,17 +235,7 @@ class _MapPageState extends State<MapPage> {
     }).toList();
   }
 
-  String _getProvinceForObservation(LatLng point) {
-    for (var poly in _countryPolygons) {
-      if (_isPointInPolygon(point, poly.points)) {
-        final props = poly.hitValue as Map<String, dynamic>?;
-        if (props != null && props['adm2_name'] != null && props['adm2_name'] != 'Special Geographic Area') {
-          return props['adm2_name'];
-        }
-      }
-    }
-    return 'Unknown';
-  }
+  String _getProvinceForObservation(LatLng point) => ProvinceLookup.provinceForPoint(point.latitude, point.longitude);
 
   String _getSeverityClass(double value) {
     if (value < 10.0) return "Healthy";
@@ -447,9 +316,7 @@ class _MapPageState extends State<MapPage> {
   }
 
   String _getDatasetPublicUrl(Map<String, dynamic> dataset) {
-    final isOwner = dataset['user_id'] == Supabase.instance.client.auth.currentUser?.id;
-    final path = isOwner ? dataset['raw_filepath'] : dataset['perturbed_filepath'];
-    return Supabase.instance.client.storage.from('datasets').getPublicUrl(path);
+    return Supabase.instance.client.storage.from('datasets').getPublicUrl(dataset['filepath']);
   }
 
   void _onDatasetSelected(Map<String, dynamic>? dataset) {
@@ -579,6 +446,19 @@ class _MapPageState extends State<MapPage> {
     );
   }
 
+  void _showToast(String message, {bool isError = true}) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).clearSnackBars();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: isError ? Colors.red[800] : Colors.green[800],
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      ),
+    );
+  }
+
   // --- Plantation Fetching ---
   Future<void> _fetchPlantations(String datasetUrl) async {
     setState(() => _isPlantationsLoading = true);
@@ -592,10 +472,12 @@ class _MapPageState extends State<MapPage> {
           _plantationsData = data.cast<Map<String, dynamic>>();
         });
       } else {
-        debugPrint("API Error: ${response.statusCode}");
+        debugPrint("API Error: ${response.statusCode} ${response.body}");
+        _showToast('Failed to load plantation points (${response.statusCode}).');
       }
     } catch (e) {
       debugPrint("Connection error: $e");
+      _showToast('Could not reach the spatial engine: $e');
     } finally {
       setState(() => _isPlantationsLoading = false);
     }
@@ -727,16 +609,9 @@ class _MapPageState extends State<MapPage> {
   bool _isObservationInProvince(Map<String, dynamic> obs, String province) {
     if (province == 'All') return true;
     final coords = _parseCoordinates(obs['coordinates']);
-    final lat = coords?['lat'] ?? 0.0;
-    final lng = coords?['lng'] ?? 0.0;
-    final point = LatLng(lat, lng);
-    for (var poly in _countryPolygons) {
-      if (_isPointInPolygon(point, poly.points)) {
-        final props = poly.hitValue as Map<String, dynamic>?;
-        if (props != null && props['adm2_name'] == province) return true;
-      }
-    }
-    return false;
+    final double lat = obs['latitude'] != null ? double.tryParse(obs['latitude'].toString()) ?? (coords?['lat'] ?? 0.0) : (coords?['lat'] ?? 0.0);
+    final double lng = obs['longitude'] != null ? double.tryParse(obs['longitude'].toString()) ?? (coords?['lng'] ?? 0.0) : (coords?['lng'] ?? 0.0);
+    return ProvinceLookup.provinceForPoint(lat, lng) == province;
   }
 
   List<Marker> _buildObservationMarkers() {
@@ -771,8 +646,8 @@ class _MapPageState extends State<MapPage> {
 
     return filtered.map((obs) {
       final coords = _parseCoordinates(obs['coordinates']);
-      final lat = coords?['lat'] ?? 0.0;
-      final lng = coords?['lng'] ?? 0.0;
+      final double lat = obs['latitude'] != null ? double.tryParse(obs['latitude'].toString()) ?? (coords?['lat'] ?? 0.0) : (coords?['lat'] ?? 0.0);
+      final double lng = obs['longitude'] != null ? double.tryParse(obs['longitude'].toString()) ?? (coords?['lng'] ?? 0.0) : (coords?['lng'] ?? 0.0);
       final confidence = double.tryParse(obs['confidence_score']?.toString() ?? '') ?? 0.0;
       final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
 
@@ -1018,10 +893,12 @@ class _MapPageState extends State<MapPage> {
           _krigingPolygons = polygons;
         });
       } else {
-        debugPrint("API Error: ${response.statusCode}");
+        debugPrint("API Error: ${response.statusCode} ${response.body}");
+        _showToast('Failed to load spread mapper data (${response.statusCode}).');
       }
     } catch (e) {
       debugPrint("Connection error: $e");
+      _showToast('Could not reach the spatial engine: $e');
     } finally {
       if (mounted) {
         setState(() {
@@ -1054,10 +931,12 @@ class _MapPageState extends State<MapPage> {
           _caPolygons = polygons;
         });
       } else {
-        debugPrint("API Error: ${response.statusCode}");
+        debugPrint("API Error: ${response.statusCode} ${response.body}");
+        _showToast('Failed to load forecast data (${response.statusCode}).');
       }
     } catch (e) {
       debugPrint("Connection error: $e");
+      _showToast('Could not reach the spatial engine: $e');
     } finally {
       if (mounted) {
         setState(() {
@@ -1217,7 +1096,7 @@ class _MapPageState extends State<MapPage> {
                                   itemCount: _filteredDatasets.length,
                                   itemBuilder: (context, index) {
                                     final dataset = _filteredDatasets[index];
-                                    final isSelected = _selectedDataset != null && _selectedDataset!['raw_filepath'] == dataset['raw_filepath'];
+                                    final isSelected = _selectedDataset != null && _selectedDataset!['filepath'] == dataset['filepath'];
                                     final isOwner = dataset['user_id'] == Supabase.instance.client.auth.currentUser?.id;
                                     final uploaderName = dataset['users'] != null && dataset['users'] is Map
                                         ? (dataset['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
