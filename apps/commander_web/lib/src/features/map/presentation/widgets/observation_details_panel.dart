@@ -1,7 +1,11 @@
+// ignore_for_file: avoid_dynamic_calls
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
-
+import 'package:flutter/services.dart';
+import 'dart:convert';
+import 'dart:typed_data';
+import 'package:latlong2/latlong.dart';
 class ObservationDetailsPanel extends StatefulWidget {
   final Map<String, dynamic> obs;
   final VoidCallback onClose;
@@ -20,6 +24,139 @@ class ObservationDetailsPanel extends StatefulWidget {
 
 class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
   bool _isDeleting = false;
+  String? _province;
+  bool _isLoadingProvince = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchProvince();
+  }
+
+  @override
+  void didUpdateWidget(ObservationDetailsPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.obs['observation_id'] != widget.obs['observation_id']) {
+      setState(() {
+        _province = null;
+        _isLoadingProvince = true;
+      });
+      _fetchProvince();
+    }
+  }
+
+  Future<void> _fetchProvince() async {
+    final coords = _parseCoordinates(widget.obs['coordinates']);
+    final double? lat = widget.obs['latitude'] != null ? double.tryParse(widget.obs['latitude'].toString()) : coords?['lat'];
+    final double? lng = widget.obs['longitude'] != null ? double.tryParse(widget.obs['longitude'].toString()) : coords?['lng'];
+
+    if (lat == null || lng == null) {
+      if (mounted) setState(() { _province = 'Unknown'; _isLoadingProvince = false; });
+      return;
+    }
+    try {
+      final String geoJsonString = await rootBundle.loadString('assets/philippines.json');
+      final data = json.decode(geoJsonString);
+      final features = data['features'] as List;
+      final point = LatLng(lat, lng);
+
+      for (var feature in features) {
+        final props = feature['properties'];
+        final geometry = feature['geometry'];
+        if (geometry == null) continue;
+        final type = geometry['type'];
+        final coordsList = geometry['coordinates'] as List;
+
+        if (type == 'Polygon') {
+          final ring = coordsList[0] as List;
+          final points = ring.map((c) => LatLng((c[1] as num).toDouble(), (c[0] as num).toDouble())).toList();
+          if (_isPointInPolygon(point, points)) {
+            if (props != null && props['adm2_name'] != null && props['adm2_name'] != 'Special Geographic Area') {
+              if (mounted) setState(() { _province = props['adm2_name']; _isLoadingProvince = false; });
+              return;
+            }
+          }
+        } else if (type == 'MultiPolygon') {
+          for (var poly in coordsList) {
+            final ring = poly[0] as List;
+            final points = ring.map((c) => LatLng((c[1] as num).toDouble(), (c[0] as num).toDouble())).toList();
+            if (_isPointInPolygon(point, points)) {
+              if (props != null && props['adm2_name'] != null && props['adm2_name'] != 'Special Geographic Area') {
+                if (mounted) setState(() { _province = props['adm2_name']; _isLoadingProvince = false; });
+                return;
+              }
+            }
+          }
+        }
+      }
+      if (mounted) setState(() { _province = 'Unknown'; _isLoadingProvince = false; });
+    } catch (e) {
+      if (mounted) setState(() { _province = 'Unknown'; _isLoadingProvince = false; });
+    }
+  }
+
+  bool _isPointInPolygon(LatLng point, List<LatLng> polygon) {
+    int intersectCount = 0;
+    for (int j = 0; j < polygon.length - 1; j++) {
+      if (_rayCastIntersect(point, polygon[j], polygon[j + 1])) intersectCount++;
+    }
+    return (intersectCount % 2) == 1;
+  }
+
+  bool _rayCastIntersect(LatLng point, LatLng vertA, LatLng vertB) {
+    double aY = vertA.latitude, bY = vertB.latitude, aX = vertA.longitude, bX = vertB.longitude;
+    double pY = point.latitude, pX = point.longitude;
+    if ((aY > pY && bY > pY) || (aY < pY && bY < pY) || (aX < pX && bX < pX)) return false;
+    double m = (aY - bY) / (aX - bX);
+    double bee = (-aX) * m + aY;
+    double x = (pY - bee) / m;
+    return x > pX;
+  }
+
+  Map<String, double>? _parseCoordinates(dynamic coords) {
+    if (coords == null) return null;
+    if (coords is Map) {
+      final map = coords.cast<String, dynamic>();
+      final list = map['coordinates'];
+      if (list is List && list.length >= 2) return {'lat': (list[1] as num).toDouble(), 'lng': (list[0] as num).toDouble()};
+    } else if (coords is String) {
+      // WKT format: POINT(lng lat)
+      if (coords.toUpperCase().startsWith('POINT(')) {
+        final inner = coords.substring(6, coords.length - 1).split(' ');
+        if (inner.length >= 2) {
+          final lng = double.tryParse(inner[0]);
+          final lat = double.tryParse(inner[1]);
+          if (lat != null && lng != null) return {'lat': lat, 'lng': lng};
+        }
+      }
+      // EWKB hex format from PostGIS (e.g. "0101000020E6100000...")
+      if (coords.length >= 42 && RegExp(r'^[0-9a-fA-F]+$').hasMatch(coords)) {
+        try {
+          return _parseEWKBHex(coords);
+        } catch (e) {
+          debugPrint('[Province] EWKB parse error: $e');
+        }
+      }
+    }
+    return null;
+  }
+
+  Map<String, double>? _parseEWKBHex(String hex) {
+    final bytes = Uint8List(hex.length ~/ 2);
+    for (var i = 0; i < hex.length; i += 2) {
+      bytes[i ~/ 2] = int.parse(hex.substring(i, i + 2), radix: 16);
+    }
+    final byteData = ByteData.view(bytes.buffer);
+    final byteOrder = bytes[0]; // 0x01 = little-endian
+    final endian = byteOrder == 1 ? Endian.little : Endian.big;
+    final geomType = byteData.getUint32(1, endian);
+    final hasSRID = (geomType & 0x20000000) != 0;
+    final coordOffset = hasSRID ? 9 : 5;
+    // PostGIS stores X=longitude first, then Y=latitude
+    final lng = byteData.getFloat64(coordOffset, endian);
+    final lat = byteData.getFloat64(coordOffset + 8, endian);
+    return {'lat': lat, 'lng': lng};
+  }
 
   Future<void> _handleDelete() async {
     setState(() => _isDeleting = true);
@@ -32,6 +169,13 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
 
   @override
   Widget build(BuildContext context) {
+    final isOwner = Supabase.instance.client.auth.currentUser?.id == widget.obs['user_id'];
+    final coords = _parseCoordinates(widget.obs['coordinates']);
+    final double? lat = widget.obs['latitude'] != null ? double.tryParse(widget.obs['latitude'].toString()) : coords?['lat'];
+    final double? lng = widget.obs['longitude'] != null ? double.tryParse(widget.obs['longitude'].toString()) : coords?['lng'];
+    final latStr = lat != null ? lat.toStringAsFixed(6) : 'N/A';
+    final lngStr = lng != null ? lng.toStringAsFixed(6) : 'N/A';
+
     final rawTimestamp = widget.obs['observation_timestamp'];
     final rawDate = rawTimestamp != null ? DateTime.tryParse(rawTimestamp.toString()) : null;
     final dateStr = rawDate != null ? DateFormat.yMMMd().add_jm().format(rawDate.toLocal()) : 'Unknown Date';
@@ -149,6 +293,9 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
                   
                   _buildMetaRow(Icons.person, 'Observer', contributorName),
                   _buildMetaRow(Icons.calendar_today, 'Observation Timestamp', dateStr),
+                  _buildMetaRow(Icons.map, 'Province', _isLoadingProvince ? 'Loading...' : (_province ?? 'Unknown')),
+                  if (isOwner)
+                    _buildMetaRow(Icons.location_on, 'Coordinates', '$latStr, $lngStr'),
                   _buildMetaRow(Icons.cloud_upload, 'Upload Timestamp', uploadStr),
                   _buildMetaRow(
                     isVerified ? Icons.verified : (underVerification ? Icons.pending_actions : Icons.new_releases), 
@@ -180,7 +327,7 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
             ),
             const Divider(height: 1),
             // Actions
-            if (Supabase.instance.client.auth.currentUser?.id == widget.obs['user_id'])
+            if (isOwner)
               Padding(
                 padding: const EdgeInsets.all(16.0),
                 child: _isDeleting
