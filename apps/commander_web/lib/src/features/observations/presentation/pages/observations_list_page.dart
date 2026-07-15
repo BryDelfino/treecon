@@ -25,9 +25,15 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
 
   DateTime? _filterStartDate;
   DateTime? _filterEndDate;
-  String _searchUserName = '';
-  bool? _filterIsVerified; // true for Verified, false for Unverified, null for All
+  String _filterProvince = 'All';
+  bool _filterAnonymousOnly = false;
   bool _sortAscending = false;
+
+  // "My Observations" (isExpertOnly) filters only — not applicable to the
+  // verify queue, where every row is always under_verification/PENDING.
+  String _filterVerificationState = 'All'; // All, Verified, Unverified
+  String _filterVerificationStatus = 'All'; // All, Pending, Approved, Rejected
+  String _filterVisibility = 'All'; // All, Public, Private
   
   final int _pageSize = 21;
   int _currentPage = 0;
@@ -42,6 +48,9 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
     super.initState();
     _fetchObservations(resetPage: true);
     _setupRealtime();
+    ProvinceLookup.load().then((_) {
+      if (mounted) setState(() {});
+    });
   }
 
   void _setupRealtime() async {
@@ -69,7 +78,23 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
             final newRow = payload.newRecord;
             final obsId = newRow['observation_id'].toString();
             final isQueued = newRow['under_verification'] == true && newRow['verification_result'] == 'PENDING';
-            
+            final isEligible = newRow['under_verification'] == true && newRow['is_public'] == true && newRow['is_deleted'] != true;
+
+            final index = _observations.indexWhere((o) => o['observation_id'].toString() == obsId);
+            if (index != -1 && mounted) {
+              setState(() {
+                if (!isEligible) {
+                  _observations.removeAt(index);
+                  if (_totalCount > 0) _totalCount--;
+                } else {
+                  _observations[index] = {
+                    ..._observations[index],
+                    ...newRow,
+                  };
+                }
+              });
+            }
+
             if (isQueued) {
               if (!_knownQueuedIds.contains(obsId)) {
                 _knownQueuedIds.add(obsId);
@@ -183,12 +208,12 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
       if (widget.isExpertOnly) {
         query = query.eq('user_id', user.id);
       } else {
-        query = query.eq('under_verification', true).eq('is_public', true);
-        if (_searchUserName.isNotEmpty) {
-          query = query.ilike('users.user_name', '%$_searchUserName%');
-        }
+        query = query
+            .eq('under_verification', true)
+            .eq('is_public', true)
+            .or('is_deleted.eq.false,is_deleted.is.null');
       }
-      
+
       if (_filterStartDate != null) {
         query = query.gte('observation_timestamp', _filterStartDate!.toUtc().toIso8601String());
       }
@@ -196,14 +221,33 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
         // Add 1 day to include the end date fully
         query = query.lte('observation_timestamp', _filterEndDate!.add(const Duration(days: 1)).toUtc().toIso8601String());
       }
-      
-      if (_filterIsVerified != null) {
-        if (_filterIsVerified!) {
-          query = query.eq('is_verified', true);
-        } else {
-          // Unverified can mean is_verified is false or null
-          query = query.or('is_verified.eq.false,is_verified.is.null');
+
+      if (widget.isExpertOnly) {
+        if (_filterVerificationState == 'Unverified') {
+          query = query.or('under_verification.eq.false,under_verification.is.null').isFilter('verification_result', null);
+        } else if (_filterVerificationState == 'Verified') {
+          query = query.or('under_verification.eq.true,verification_result.not.is.null');
         }
+
+        if (_filterVerificationState != 'Unverified') {
+          if (_filterVerificationStatus == 'Pending') {
+            query = query.eq('under_verification', true);
+          } else if (_filterVerificationStatus == 'Approved') {
+            query = query.eq('verification_result', 'APPROVED');
+          } else if (_filterVerificationStatus == 'Rejected') {
+            query = query.eq('verification_result', 'REJECTED');
+          }
+        }
+
+        if (_filterVisibility == 'Public') {
+          query = query.eq('is_public', true);
+        } else if (_filterVisibility == 'Private') {
+          query = query.eq('is_public', false);
+        }
+      }
+
+      if (_filterAnonymousOnly) {
+        query = query.eq('is_anonymous', true);
       }
 
       final response = await query
@@ -215,8 +259,18 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
         setState(() {
           final data = response.data;
           _totalCount = response.count;
-          _observations = (data as List<dynamic>).map((e) => e as Map<String, dynamic>).toList();
-          
+          var observations = (data as List<dynamic>).map((e) => e as Map<String, dynamic>).toList();
+
+          // Province has no DB column; filter this page's rows client-side via point-in-polygon lookup.
+          if (_filterProvince != 'All') {
+            observations = observations.where((obs) {
+              final coords = _parseCoordinates(obs['coordinates']);
+              if (coords == null) return false;
+              return ProvinceLookup.provinceForPoint(coords['lat']!, coords['lng']!) == _filterProvince;
+            }).toList();
+          }
+
+          _observations = observations;
           _isLoading = false;
         });
       }
@@ -293,28 +347,14 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
     return ByteData.sublistView(bytes).getFloat64(0, Endian.little);
   }
 
-  Color _getSeverityColor(String? severity) {
-    switch (severity?.toLowerCase()) {
-      case 'healthy':
-        return Colors.green;
-      case 'low':
-        return Colors.blue;
-      case 'moderate':
-        return Colors.orange;
-      case 'high':
-        return Colors.deepOrange;
-      case 'severe':
-        return Colors.red;
-      default:
-        return Colors.grey;
-    }
-  }
-
   void _showFilterModal() {
     DateTime? tempStart = _filterStartDate;
     DateTime? tempEnd = _filterEndDate;
-    final searchController = TextEditingController(text: _searchUserName);
-    bool? tempIsVerified = _filterIsVerified;
+    String tempProvince = _filterProvince;
+    bool tempAnonymousOnly = _filterAnonymousOnly;
+    String tempVerificationState = _filterVerificationState;
+    String tempVerificationStatus = _filterVerificationStatus;
+    String tempVisibility = _filterVisibility;
 
     showDialog(
       context: context,
@@ -335,36 +375,88 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    if (!widget.isExpertOnly) ...[
-                      const Text('Search by User', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                    if (widget.isExpertOnly) ...[
+                      const Text('Verification State', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
                       const SizedBox(height: 8),
-                      TextField(
-                        controller: searchController,
+                      DropdownButtonFormField<String>(
+                        initialValue: tempVerificationState,
                         decoration: InputDecoration(
-                          hintText: 'Enter user name',
-                          prefixIcon: const Icon(Icons.person_search, size: 20),
                           border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                           contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                         ),
+                        items: const [
+                          DropdownMenuItem(value: 'All', child: Text('All')),
+                          DropdownMenuItem(value: 'Verified', child: Text('Verified')),
+                          DropdownMenuItem(value: 'Unverified', child: Text('Unverified')),
+                        ],
+                        onChanged: (value) {
+                          if (value == null) return;
+                          setModalState(() {
+                            tempVerificationState = value;
+                            if (value == 'Unverified') tempVerificationStatus = 'All';
+                          });
+                        },
+                      ),
+                      const SizedBox(height: 20),
+                      const Text('Verification Status', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                      const SizedBox(height: 8),
+                      DropdownButtonFormField<String>(
+                        initialValue: tempVerificationStatus,
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        ),
+                        items: const [
+                          DropdownMenuItem(value: 'All', child: Text('All')),
+                          DropdownMenuItem(value: 'Pending', child: Text('Pending')),
+                          DropdownMenuItem(value: 'Approved', child: Text('Approved')),
+                          DropdownMenuItem(value: 'Rejected', child: Text('Rejected')),
+                        ],
+                        onChanged: tempVerificationState == 'Unverified'
+                            ? null
+                            : (value) {
+                                if (value != null) setModalState(() => tempVerificationStatus = value);
+                              },
+                      ),
+                      const SizedBox(height: 20),
+                      const Text('Visibility', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                      const SizedBox(height: 8),
+                      DropdownButtonFormField<String>(
+                        initialValue: tempVisibility,
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        ),
+                        items: const [
+                          DropdownMenuItem(value: 'All', child: Text('All')),
+                          DropdownMenuItem(value: 'Public', child: Text('Public')),
+                          DropdownMenuItem(value: 'Private', child: Text('Private')),
+                        ],
+                        onChanged: (value) {
+                          if (value != null) setModalState(() => tempVisibility = value);
+                        },
                       ),
                       const SizedBox(height: 20),
                     ],
-                    const Text('Verification Status', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                    const Text('Province', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
                     const SizedBox(height: 8),
-                    DropdownButtonFormField<bool?>(
-                      initialValue: tempIsVerified,
+                    InputDecorator(
                       decoration: InputDecoration(
                         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                       ),
-                      items: const [
-                        DropdownMenuItem(value: null, child: Text('All Statuses')),
-                        DropdownMenuItem(value: true, child: Text('Verified Only')),
-                        DropdownMenuItem(value: false, child: Text('Unverified Only')),
-                      ],
-                      onChanged: (value) {
-                        setModalState(() => tempIsVerified = value);
-                      },
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: tempProvince,
+                          isExpanded: true,
+                          items: ProvinceLookup.buildDropdownItems(),
+                          onChanged: (value) {
+                            if (value != null && !value.startsWith('HEADER_')) {
+                              setModalState(() => tempProvince = value);
+                            }
+                          },
+                        ),
+                      ),
                     ),
                     const SizedBox(height: 20),
                     const Text('Date Range', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
@@ -397,6 +489,24 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                         if (picked != null) setModalState(() => tempEnd = picked);
                       },
                     ),
+                    const SizedBox(height: 12),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.grey.shade300),
+                      ),
+                      child: SwitchListTile(
+                        title: const Text('Anonymous Only', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                        subtitle: const Text('Show only observations submitted anonymously', style: TextStyle(fontSize: 11)),
+                        value: tempAnonymousOnly,
+                        activeTrackColor: Colors.green.shade200,
+                        activeThumbColor: Colors.green.shade700,
+                        onChanged: (val) {
+                          setModalState(() => tempAnonymousOnly = val);
+                        },
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -406,8 +516,11 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                     setState(() {
                       _filterStartDate = null;
                       _filterEndDate = null;
-                      _searchUserName = '';
-                      _filterIsVerified = null;
+                      _filterProvince = 'All';
+                      _filterAnonymousOnly = false;
+                      _filterVerificationState = 'All';
+                      _filterVerificationStatus = 'All';
+                      _filterVisibility = 'All';
                     });
                     Navigator.pop(context);
                     _fetchObservations(resetPage: true);
@@ -419,8 +532,11 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                     setState(() {
                       _filterStartDate = tempStart;
                       _filterEndDate = tempEnd;
-                      _searchUserName = searchController.text.trim();
-                      _filterIsVerified = tempIsVerified;
+                      _filterProvince = tempProvince;
+                      _filterAnonymousOnly = tempAnonymousOnly;
+                      _filterVerificationState = tempVerificationState;
+                      _filterVerificationStatus = tempVerificationStatus;
+                      _filterVisibility = tempVisibility;
                     });
                     Navigator.pop(context);
                     _fetchObservations(resetPage: true);
@@ -627,16 +743,13 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                 itemCount: _observations.length,
                 itemBuilder: (context, index) {
             final obs = _observations[index];
-            final severity = obs['confidence_score'] != null ? 'high' : 'unknown';
-            final severityColor = _getSeverityColor(severity);
             final rawTimestamp = obs['observation_timestamp'] ?? obs['upload_timestamp'];
             final rawDate = rawTimestamp != null ? DateTime.tryParse(rawTimestamp.toString()) : null;
             final dateStr = rawDate != null ? DateFormat.yMMMd().add_jm().format(rawDate.toLocal()) : 'N/A';
             final coords = _parseCoordinates(obs['coordinates']);
             final latStr = coords != null ? coords['lat']!.toStringAsFixed(6) : 'N/A';
             final lngStr = coords != null ? coords['lng']!.toStringAsFixed(6) : 'N/A';
-            final captureMethod = obs['source']?.toString() ?? 'UPLOAD';
-            const evaluationMethod = 'MANUAL';
+            final source = obs['source']?.toString().toUpperCase() ?? 'UPLOAD';
             final imageUrl = obs['image_url']?.toString();
             final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
             final isPublic = obs['is_public'] == true;
@@ -672,10 +785,10 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                         _observations.removeWhere((item) => item['observation_id'] == obs['observation_id']);
                         if (_totalCount > 0) _totalCount--;
                       });
-                      _fetchObservations(isSilent: true);
-                    } else if (value == true) {
-                      _fetchObservations(isSilent: true);
                     }
+                    // Always refresh on return so newly queued/changed observations
+                    // that arrived while viewing details show up immediately.
+                    _fetchObservations(isSilent: true);
                   });
                 },
                 child: Row(
@@ -711,29 +824,11 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 4.0),
-                                decoration: BoxDecoration(
-                                  color: severityColor.withValues(alpha: 0.1),
-                                  borderRadius: BorderRadius.circular(100.0),
-                                ),
-                                child: Text(
-                                  severity.toUpperCase(),
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
-                                    color: severityColor,
-                                  ),
-                                ),
-                              ),
-                              Text(
-                                dateStr,
-                                style: TextStyle(fontSize: 11, color: Colors.grey[500]),
-                              ),
-                            ],
+                          Text(
+                            dateStr,
+                            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
                           ),
                           const Spacer(),
                           if (isOwner) ...[
@@ -759,21 +854,25 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                           ],
                           Row(
                             children: [
-                              Icon(Icons.camera_alt_outlined, size: 14, color: Colors.grey[600]),
+                              Icon(Icons.person_outline, size: 14, color: Colors.grey[600]),
                               const SizedBox(width: 4.0),
-                              Text(
-                                'Method: $captureMethod ($evaluationMethod)',
-                                style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                              Expanded(
+                                child: Text(
+                                  'By: $contributorName',
+                                  style: TextStyle(fontSize: 11, color: Colors.grey[600]),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
                               ),
                             ],
                           ),
                           const SizedBox(height: 4.0),
                           Row(
                             children: [
-                              Icon(Icons.person_outline, size: 14, color: Colors.grey[600]),
+                              Icon(Icons.camera_alt_outlined, size: 14, color: Colors.grey[600]),
                               const SizedBox(width: 4.0),
                               Text(
-                                'By: $contributorName',
+                                'Source: $source',
                                 style: TextStyle(fontSize: 11, color: Colors.grey[600]),
                               ),
                             ],
