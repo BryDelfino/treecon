@@ -206,7 +206,7 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
       var query = Supabase.instance.client.from('observations').select('*, users!observations_user_id_fkey!inner(user_name)');
 
       if (widget.isExpertOnly) {
-        query = query.eq('user_id', user.id);
+        query = query.eq('user_id', user.id).or('is_deleted.eq.false,is_deleted.is.null');
       } else {
         query = query
             .eq('under_verification', true)
@@ -754,12 +754,12 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
             final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
             final isPublic = obs['is_public'] == true;
             final isAnonymous = obs['is_anonymous'] == true;
-            final contributorName = (isPublic && isAnonymous)
+            final isOwner = obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
+            final contributorName = (isPublic && isAnonymous && !isOwner)
                 ? 'Anonymous Scout'
                 : (obs['users'] != null && obs['users'] is Map
                     ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
                     : 'Unknown User');
-            final isOwner = obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
 
             return Card(
               elevation: 2,
@@ -864,6 +864,10 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                                   overflow: TextOverflow.ellipsis,
                                 ),
                               ),
+                              if (isAnonymous && isOwner) ...[
+                                const SizedBox(width: 4.0),
+                                Icon(Icons.visibility_off_rounded, size: 12, color: Colors.purple[700]),
+                              ],
                             ],
                           ),
                           const SizedBox(height: 4.0),
