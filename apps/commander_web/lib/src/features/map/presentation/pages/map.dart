@@ -50,10 +50,11 @@ class _MapPageState extends State<MapPage> {
   DateTime? _observationStartDate;
   DateTime? _observationEndDate;
   bool _showMyObservationsOnly = false;
+  bool _hideAnonymousObservations = false;
 
   final List<String> _availableVerificationStatuses = ['All', 'Verified', 'Unverified'];
   final List<String> _availableUserRoles = ['All', 'Expert', 'Community'];
-  bool _showObservations = false;
+  bool _showObservations = true;
   bool _isObservationsExpanded = false;
   bool _isObservationsLoading = false;
   bool _isControlsCollapsed = false;
@@ -1138,6 +1139,12 @@ class _MapPageState extends State<MapPage> {
       if (_selectedObservationUserRole == 'Community' && isExpert) return false;
 
       if (_showMyObservationsOnly && obs['user_id'] != Supabase.instance.client.auth.currentUser?.id) return false;
+
+      if (_hideAnonymousObservations &&
+          obs['is_anonymous'] == true &&
+          obs['user_id'] != Supabase.instance.client.auth.currentUser?.id) {
+        return false;
+      }
 
       if (_observationStartDate != null || _observationEndDate != null) {
         final obsDateStr = obs['observation_timestamp'] as String?;
@@ -2385,6 +2392,17 @@ class _MapPageState extends State<MapPage> {
                                 setState(() {
                                   _showMyObservationsOnly = val;
                                   if (val) _selectedObservationUserRole = 'All';
+                                  _selectedObservation = null;
+                                });
+                              },
+                            ),
+                            SwitchListTile(
+                              contentPadding: EdgeInsets.zero,
+                              title: const Text("Hide Anonymous Observations", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                              value: _hideAnonymousObservations,
+                              onChanged: (val) {
+                                setState(() {
+                                  _hideAnonymousObservations = val;
                                   _selectedObservation = null;
                                 });
                               },
