@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_services/shared_services.dart';
@@ -38,6 +39,8 @@ class _ObservationPageState extends State<ObservationPage> {
   String _filterVerificationStatus = 'All'; // All, Pending, Approved, Rejected
   String _filterVisibility = 'All'; // All, Public, Private
   String _filterStorage = 'All'; // All, Local Only, Synced Only
+  String _filterProvince = 'All';
+  bool _filterAnonymousOnly = false;
 
   late final StreamSubscription<bool> _networkSub;
 
@@ -46,6 +49,9 @@ class _ObservationPageState extends State<ObservationPage> {
     super.initState();
     _fetchObservations();
     ObservationLocalDb.instance.updatePendingCount();
+    ProvinceLookup.load().then((_) {
+      if (mounted) setState(() {});
+    });
 
     _networkSub = NetworkService.instance.onConnectivityChanged.listen((isOnline) {
       if (!mounted) return;
@@ -98,7 +104,8 @@ class _ObservationPageState extends State<ObservationPage> {
               .select('*, verifier:users!observations_verifier_id_fkey(user_name)')
               .eq('user_id', user.id)
               .or('is_deleted.eq.false,is_deleted.is.null')
-              .order('observation_timestamp', ascending: false);
+              .order('observation_timestamp', ascending: false)
+              .timeout(const Duration(seconds: 60));
 
           remoteList = (data as List<dynamic>).map((e) {
             final map = e as Map<String, dynamic>;
@@ -109,6 +116,9 @@ class _ObservationPageState extends State<ObservationPage> {
               'is_local': false,
             };
           }).toList();
+        } on TimeoutException catch (e) {
+          debugPrint('Remote fetch timed out, falling back to offline mode: $e');
+          NetworkService.instance.forceOffline();
         } catch (e) {
           debugPrint('Remote fetch error: $e');
         }
@@ -119,6 +129,12 @@ class _ObservationPageState extends State<ObservationPage> {
           _localObservations = localList;
           _remoteObservations = remoteList;
           _isLoading = false;
+          if (!isOnline) {
+            _filterStorage = 'All';
+            _filterVerificationState = 'All';
+            _filterVerificationStatus = 'All';
+            _filterVisibility = 'All';
+          }
         });
       }
     } catch (e) {
@@ -131,7 +147,16 @@ class _ObservationPageState extends State<ObservationPage> {
     }
   }
 
-  Future<bool> _syncSingleObservation(String observationId, {bool isBulk = false}) async {
+  Future<bool> _syncSingleObservation(String observationId, {bool isBulk = false, bool skipConfirmation = false}) async {
+    if (!isBulk && !skipConfirmation && mounted) {
+      final confirmed = await _showObservationConfirmation(
+        title: 'Sync this observation?',
+        message: 'This will upload the observation to the system.',
+        confirmLabel: 'Sync',
+      );
+      if (!confirmed) return false;
+    }
+
     final user = Supabase.instance.client.auth.currentUser;
     if (user == null || !NetworkService.instance.isOnline) {
       if (!isBulk) _showToast('Sign in and connect to internet to sync.');
@@ -241,7 +266,6 @@ class _ObservationPageState extends State<ObservationPage> {
         });
         await Future.delayed(const Duration(milliseconds: 400)); // Show 100% briefly
         if (!isBulk) {
-          _showToast('Observation synced successfully!', isError: false);
           await _fetchObservations();
         }
       }
@@ -266,6 +290,13 @@ class _ObservationPageState extends State<ObservationPage> {
   }
 
   Future<void> _syncAllObservations() async {
+    final confirmed = await _showObservationConfirmation(
+      title: 'Sync all pending observations?',
+      message: 'This will upload all pending observations to the system.',
+      confirmLabel: 'Sync All',
+    );
+    if (!confirmed) return;
+
     final user = Supabase.instance.client.auth.currentUser;
     if (user == null || !NetworkService.instance.isOnline) {
       _showToast('Sign in and connect to internet to sync.');
@@ -312,6 +343,52 @@ class _ObservationPageState extends State<ObservationPage> {
     }
   }
 
+  Map<String, double>? _parseCoordinates(dynamic coordsData) {
+    if (coordsData == null) return null;
+    if (coordsData is Map) {
+      return {'lat': (coordsData['lat'] as num).toDouble(), 'lng': (coordsData['lng'] as num).toDouble()};
+    }
+    if (coordsData is String) {
+      final trimmed = coordsData.trim();
+      final hexRegex = RegExp(r'^(0x)?[0-9a-fA-F]+$');
+      if (hexRegex.hasMatch(trimmed)) {
+        return _parseEWKB(trimmed);
+      }
+      final match = RegExp(r'POINT\s*\(\s*([-\d.]+)\s+([-\d.]+)\s*\)', caseSensitive: false).firstMatch(trimmed);
+      if (match != null) {
+        return {'lat': double.parse(match.group(2)!), 'lng': double.parse(match.group(1)!)};
+      }
+    }
+    return null;
+  }
+
+  Map<String, double>? _parseEWKB(String hex) {
+    try {
+      String cleanHex = hex.startsWith('0x') ? hex.substring(2) : hex;
+      if (cleanHex.length < 42) return null;
+      final byteOrder = cleanHex.substring(0, 2);
+      final isLittleEndian = byteOrder == '01';
+      final typeHex = cleanHex.substring(2, 10);
+      final hasSrid = typeHex.toLowerCase() == '01000020' || typeHex.toLowerCase() == '20000001';
+      final int startX = hasSrid ? 18 : 10;
+      final int startY = hasSrid ? 34 : 26;
+      final double lng = _hexToDouble(cleanHex.substring(startX, startX + 16), isLittleEndian);
+      final double lat = _hexToDouble(cleanHex.substring(startY, startY + 16), isLittleEndian);
+      return {'lng': lng, 'lat': lat};
+    } catch (_) {
+      return null;
+    }
+  }
+
+  double _hexToDouble(String hex, bool isLittleEndian) {
+    final bytes = Uint8List(8);
+    for (int i = 0; i < 8; i++) {
+      final idx = isLittleEndian ? (i * 2) : ((7 - i) * 2);
+      bytes[i] = int.parse(hex.substring(idx, idx + 2), radix: 16);
+    }
+    return ByteData.sublistView(bytes).getFloat64(0, Endian.little);
+  }
+
   // Filter logic
   List<Map<String, dynamic>> _applyFilters(List<Map<String, dynamic>> observations, {required bool isLocal}) {
     if (_filterStorage == 'Local Only' && !isLocal) return [];
@@ -351,11 +428,26 @@ class _ObservationPageState extends State<ObservationPage> {
         if (_filterVisibility == 'Private' && isPublic) return false;
       }
 
+      // Anonymity filter
+      if (_filterAnonymousOnly) {
+        final isAnonymous = obs['is_public'] == true && obs['is_anonymous'] == true;
+        if (!isAnonymous) return false;
+      }
+
+      // Province filter
+      if (_filterProvince != 'All') {
+        final coords = _parseCoordinates(obs['coordinates']);
+        final double? lat = obs['latitude'] != null ? double.tryParse(obs['latitude'].toString()) : coords?['lat'];
+        final double? lng = obs['longitude'] != null ? double.tryParse(obs['longitude'].toString()) : coords?['lng'];
+        if (lat == null || lng == null || ProvinceLookup.provinceForPoint(lat, lng) != _filterProvince) return false;
+      }
+
       return true;
     }).toList();
   }
 
   void _showFilterSheet() {
+    final isOnline = NetworkService.instance.isOnline;
     showModalBottomSheet(
       context: context,
       backgroundColor: Colors.white,
@@ -389,6 +481,7 @@ class _ObservationPageState extends State<ObservationPage> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
+                          if (isOnline) ...[
                           // Storage Filter
                           InputDecorator(
                             decoration: InputDecoration(
@@ -499,11 +592,13 @@ class _ObservationPageState extends State<ObservationPage> {
                             ),
                           ),
                           const SizedBox(height: 16),
-                          // Visibility Filter
+                          ],
+                          // Visibility Filter (available offline too, since owners can toggle
+                          // visibility on their own observations without a connection)
                           InputDecorator(
                             decoration: InputDecoration(
                               labelText: 'Visibility',
-                              prefixIcon: Icon(Icons.public, color: (_filterStorage == 'Local Only' || _filterVerificationStatus == 'Rejected') ? Colors.grey : Colors.green[700]),
+                              prefixIcon: Icon(Icons.public, color: (isOnline && _filterVerificationStatus == 'Rejected') ? Colors.grey : Colors.green[700]),
                               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                               contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
                             ),
@@ -517,7 +612,7 @@ class _ObservationPageState extends State<ObservationPage> {
                                     child: Text(value),
                                   );
                                 }).toList(),
-                                onChanged: (_filterStorage == 'Local Only' || _filterVerificationStatus == 'Rejected') ? null : (val) {
+                                onChanged: (isOnline && _filterVerificationStatus == 'Rejected') ? null : (val) {
                                   if (val != null) {
                                     setModalState(() => _filterVisibility = val);
                                     setState(() => _filterVisibility = val);
@@ -571,6 +666,58 @@ class _ObservationPageState extends State<ObservationPage> {
                             },
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey[300]!)),
                           ),
+                          const SizedBox(height: 16),
+                          // Province Filter
+                          InputDecorator(
+                            decoration: InputDecoration(
+                              labelText: 'Province',
+                              prefixIcon: Icon(Icons.map_outlined, color: Colors.green[700]),
+                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: _filterProvince,
+                                isExpanded: true,
+                                items: ProvinceLookup.buildDropdownItems(),
+                                selectedItemBuilder: (context) {
+                                  return ProvinceLookup.buildDropdownItems().map((item) {
+                                    if (item.value?.startsWith('HEADER_') == true) return const SizedBox.shrink();
+                                    return Align(
+                                      alignment: Alignment.centerLeft,
+                                      child: Text(item.value == 'All' ? 'All Provinces' : item.value!, style: const TextStyle(fontSize: 14)),
+                                    );
+                                  }).toList();
+                                },
+                                onChanged: (val) {
+                                  if (val != null && !val.startsWith('HEADER_')) {
+                                    setModalState(() => _filterProvince = val);
+                                    setState(() => _filterProvince = val);
+                                  }
+                                },
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          // Anonymity Filter
+                          Container(
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade100,
+                              borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: Colors.grey.shade300),
+                            ),
+                            child: SwitchListTile(
+                              title: const Text('Anonymous Only', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                              subtitle: const Text('Show only observations submitted anonymously', style: TextStyle(fontSize: 11)),
+                              value: _filterAnonymousOnly,
+                              activeTrackColor: Colors.green.shade200,
+                              activeThumbColor: Colors.green.shade700,
+                              onChanged: (val) {
+                                setModalState(() => _filterAnonymousOnly = val);
+                                setState(() => _filterAnonymousOnly = val);
+                              },
+                            ),
+                          ),
                         ],
                       ),
                     ),
@@ -588,6 +735,8 @@ class _ObservationPageState extends State<ObservationPage> {
                               _filterVerificationStatus = 'All';
                               _filterVisibility = 'All';
                               _filterStorage = 'All';
+                              _filterProvince = 'All';
+                              _filterAnonymousOnly = false;
                             });
                             setState(() {
                               _filterStartDate = null;
@@ -596,6 +745,8 @@ class _ObservationPageState extends State<ObservationPage> {
                               _filterVerificationStatus = 'All';
                               _filterVisibility = 'All';
                               _filterStorage = 'All';
+                              _filterProvince = 'All';
+                              _filterAnonymousOnly = false;
                             });
                           },
                           icon: const Icon(Icons.clear),
@@ -635,7 +786,7 @@ class _ObservationPageState extends State<ObservationPage> {
 
   @override
   Widget build(BuildContext context) {
-    final hasActiveFilter = _filterStartDate != null || _filterEndDate != null || _filterVerificationState != 'All' || _filterVerificationStatus != 'All' || _filterVisibility != 'All' || _filterStorage != 'All';
+    final hasActiveFilter = _filterStartDate != null || _filterEndDate != null || _filterVerificationState != 'All' || _filterVerificationStatus != 'All' || _filterVisibility != 'All' || _filterStorage != 'All' || _filterProvince != 'All' || _filterAnonymousOnly;
 
     return PopScope(
       canPop: false,
@@ -1017,7 +1168,7 @@ class _ObservationPageState extends State<ObservationPage> {
             ),
           );
           if (result == 'UPLOAD' && isLocal) {
-            _syncSingleObservation(observationId);
+            _syncSingleObservation(observationId, skipConfirmation: true);
           } else if (result == 'DELETE' && isLocal) {
             await ObservationLocalDb.instance.deleteObservation(observationId);
             _fetchObservations();
@@ -1207,5 +1358,33 @@ class _ObservationPageState extends State<ObservationPage> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
     );
+  }
+
+  // Helper function to show confirmation dialog
+  Future<bool> _showObservationConfirmation({
+    required String title,
+    required String message,
+    required String confirmLabel,
+  }) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text(title),
+          content: Text(message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: Text(confirmLabel),
+            ),
+          ],
+        );
+      },
+    );
+    return result ?? false;
   }
 }
