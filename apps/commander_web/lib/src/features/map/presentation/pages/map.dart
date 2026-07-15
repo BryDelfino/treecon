@@ -7,7 +7,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_marker_cluster/flutter_map_marker_cluster.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:http/http.dart' as http;
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_services/shared_services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../widgets/observation_details_panel.dart';
@@ -79,7 +79,6 @@ class _MapPageState extends State<MapPage> {
 
   Map<String, dynamic>? _selectedRegionProps;
   LatLng? _selectedRegionLocation;
-  final Map<String, String> _provinceToRegion = {};
 
   bool _isSatellite = false;
   double _currentZoom = 6.0;
@@ -236,83 +235,7 @@ class _MapPageState extends State<MapPage> {
     return null;
   }
 
-  List<String> get _availableProvinces {
-    final Set<String> provinces = {'All'};
-    for (var poly in _philippinesPolygons) {
-      final props = poly.hitValue as Map<String, dynamic>?;
-      if (props != null) {
-        final name = props['adm2_name'] as String?;
-        final region = props['adm1_name'] as String?;
-        if (name != null) {
-          provinces.add(name);
-          if (region != null && region.isNotEmpty) {
-            _provinceToRegion[name] = region;
-          }
-        }
-      }
-    }
-    final list = provinces.toList();
-    list.sort((a, b) {
-      if (a == 'All') return -1;
-      if (b == 'All') return 1;
-      final regionA = _provinceToRegion[a] ?? '';
-      final regionB = _provinceToRegion[b] ?? '';
-      final regionCompare = regionA.compareTo(regionB);
-      if (regionCompare != 0) return regionCompare;
-      return a.compareTo(b);
-    });
-    return list;
-  }
-
-  List<DropdownMenuItem<String>> _buildProvinceDropdownItems() {
-    final items = <DropdownMenuItem<String>>[];
-    items.add(
-      const DropdownMenuItem(
-        value: 'All',
-        child: Text('All Provinces', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-      )
-    );
-    
-    final grouped = <String, List<String>>{};
-    for (final prov in _availableProvinces) {
-      if (prov == 'All') continue;
-      final region = _provinceToRegion[prov] ?? 'Other Regions';
-      grouped.putIfAbsent(region, () => []).add(prov);
-    }
-    
-    final sortedRegions = grouped.keys.toList()..sort();
-    for (final region in sortedRegions) {
-      items.add(
-        DropdownMenuItem(
-          value: 'HEADER_$region',
-          enabled: false,
-          child: Text(
-            region,
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.green.shade800),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        )
-      );
-      for (final prov in grouped[region]!) {
-        items.add(
-          DropdownMenuItem(
-            value: prov,
-            child: Padding(
-              padding: const EdgeInsets.only(left: 16.0),
-              child: Text(
-                prov, 
-                style: const TextStyle(fontSize: 12),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ),
-          )
-        );
-      }
-    }
-    return items;
-  }
+  List<DropdownMenuItem<String>> _buildProvinceDropdownItems() => ProvinceLookup.buildDropdownItems();
 
   List<Widget> _buildProvinceSelectedItems(BuildContext context) {
     return _buildProvinceDropdownItems().map((item) {
@@ -320,9 +243,9 @@ class _MapPageState extends State<MapPage> {
       if (item.value == 'All') return const Align(alignment: Alignment.centerLeft, child: Text('All Provinces', style: TextStyle(fontSize: 12)));
       final prov = item.value!;
       return Align(
-        alignment: Alignment.centerLeft, 
+        alignment: Alignment.centerLeft,
         child: Text(
-          prov, 
+          prov,
           style: const TextStyle(fontSize: 12),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
@@ -331,17 +254,7 @@ class _MapPageState extends State<MapPage> {
     }).toList();
   }
 
-  String _getProvinceForObservation(LatLng point) {
-    for (var poly in _philippinesPolygons) {
-      if (_isPointInPolygon(point, poly.points)) {
-        final props = poly.hitValue as Map<String, dynamic>?;
-        if (props != null && props['adm2_name'] != null && props['adm2_name'] != 'Special Geographic Area') {
-          return props['adm2_name'];
-        }
-      }
-    }
-    return 'Unknown';
-  }
+  String _getProvinceForObservation(LatLng point) => ProvinceLookup.provinceForPoint(point.latitude, point.longitude);
 
   Map<String, double>? _parseCoordinates(dynamic coords) {
     if (coords == null) return null;
@@ -402,8 +315,8 @@ class _MapPageState extends State<MapPage> {
   bool _isObservationInProvince(Map<String, dynamic> obs, String province) {
     if (province == 'All') return true;
     final coords = _parseCoordinates(obs['coordinates']);
-    final lat = coords?['lat'] ?? 0.0;
-    final lng = coords?['lng'] ?? 0.0;
+    final double lat = obs['latitude'] != null ? double.tryParse(obs['latitude'].toString()) ?? (coords?['lat'] ?? 0.0) : (coords?['lat'] ?? 0.0);
+    final double lng = obs['longitude'] != null ? double.tryParse(obs['longitude'].toString()) ?? (coords?['lng'] ?? 0.0) : (coords?['lng'] ?? 0.0);
     final point = LatLng(lat, lng);
     
     for (var poly in _caPolygons) {
@@ -498,50 +411,9 @@ class _MapPageState extends State<MapPage> {
 
 
 
-  List<Polygon> _philippinesPolygons = [];
-
   Future<void> _loadPhilippinesGeoJSON() async {
-    try {
-      final String jsonString = await rootBundle.loadString('assets/philippines.json');
-      final Map<String, dynamic> geojson = json.decode(jsonString) as Map<String, dynamic>;
-      final features = geojson['features'] as List<dynamic>;
-      final List<Polygon> polys = [];
-      for (var f in features) {
-        final feature = f as Map<String, dynamic>;
-        if (feature['geometry'] == null) continue;
-        final geom = feature['geometry'] as Map<String, dynamic>;
-        final type = geom['type'] as String;
-        final coords = geom['coordinates'] as List<dynamic>;
-        final props = feature['properties'] as Map<String, dynamic>?;
-        if (props?['adm2_name'] == 'Special Geographic Area') continue;
-
-        if (type == 'Polygon') {
-          final List<LatLng> points = [];
-          final ring = coords[0] as List<dynamic>;
-          for (var pt in ring) {
-            final point = pt as List<dynamic>;
-            points.add(LatLng((point[1] as num).toDouble(), (point[0] as num).toDouble()));
-          }
-          polys.add(Polygon(points: points, color: Colors.transparent, borderStrokeWidth: 0, hitValue: props));
-        } else if (type == 'MultiPolygon') {
-          for (var poly in coords) {
-            final polygon = poly as List<dynamic>;
-            final List<LatLng> points = [];
-            final ring = polygon[0] as List<dynamic>;
-            for (var pt in ring) {
-              final point = pt as List<dynamic>;
-              points.add(LatLng((point[1] as num).toDouble(), (point[0] as num).toDouble()));
-            }
-            polys.add(Polygon(points: points, color: Colors.transparent, borderStrokeWidth: 0, hitValue: props));
-          }
-        }
-      }
-      setState(() {
-        _philippinesPolygons = polys;
-      });
-    } catch (e) {
-      debugPrint("Error loading philippines.json: $e");
-    }
+    await ProvinceLookup.load();
+    if (mounted) setState(() {});
   }
 
   @override
@@ -649,7 +521,7 @@ class _MapPageState extends State<MapPage> {
           barrierDismissible: false,
           builder: (context) {
             bool tempIsPublic = false;
-            final textController = TextEditingController(text: file.name);
+            final textController = TextEditingController();
             bool hasDuplicateError = _availableDatasets.any((ds) => ds['filename'] == file.name && ds['user_id'] == currentUserId);
 
             return StatefulBuilder(
@@ -672,19 +544,20 @@ class _MapPageState extends State<MapPage> {
                       TextField(
                         controller: textController,
                         decoration: InputDecoration(
-                          hintText: 'Enter dataset name',
+                          hintText: file.name,
                           border: const OutlineInputBorder(),
                           errorText: hasDuplicateError ? 'You have already uploaded a dataset with this name.' : null,
                           isDense: true,
                         ),
                         onChanged: (val) {
                           setStateDialog(() {
-                            hasDuplicateError = _availableDatasets.any((ds) => ds['filename'] == val.trim() && ds['user_id'] == currentUserId);
+                            final effectiveName = val.trim().isEmpty ? file.name : val.trim();
+                            hasDuplicateError = _availableDatasets.any((ds) => ds['filename'] == effectiveName && ds['user_id'] == currentUserId);
                           });
                         },
                       ),
                       const SizedBox(height: 16),
-                      const Text('Do you want to make this dataset public? Note: The perturbed version of your data will be the one publicly available to other users.', style: TextStyle(fontSize: 13)),
+                      const Text('Do you want to make this dataset public? Note: Other users will be able to view this dataset, but exact coordinates will be hidden unless they are the owner.', style: TextStyle(fontSize: 13)),
                       const SizedBox(height: 12),
                       Container(
                         decoration: BoxDecoration(
@@ -706,9 +579,12 @@ class _MapPageState extends State<MapPage> {
                     TextButton(onPressed: () => Navigator.pop(context, null), child: const Text('Cancel')),
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade700, foregroundColor: Colors.white),
-                      onPressed: hasDuplicateError || textController.text.trim().isEmpty 
-                          ? null 
-                          : () => Navigator.pop(context, {'isPublic': tempIsPublic, 'displayName': textController.text.trim()}),
+                      onPressed: hasDuplicateError
+                          ? null
+                          : () => Navigator.pop(context, {
+                                'isPublic': tempIsPublic,
+                                'displayName': textController.text.trim().isEmpty ? file.name : textController.text.trim(),
+                              }),
                       child: const Text('Upload'),
                     ),
                   ],
@@ -747,8 +623,7 @@ class _MapPageState extends State<MapPage> {
       }
 
       final processedData = json.decode(responseBody) as Map<String, dynamic>;
-      final rawCsvString = processedData['raw_csv'] as String;
-      final perturbedCsvString = processedData['perturbed_csv'] as String;
+      final csvString = processedData['csv'] as String;
 
       final user = Supabase.instance.client.auth.currentUser;
       if (user == null) {
@@ -758,26 +633,18 @@ class _MapPageState extends State<MapPage> {
 
       final timestamp = DateTime.now().millisecondsSinceEpoch;
       final safeName = displayName.replaceAll(' ', '_');
-      final rawPath = '${user.id}/${timestamp}_raw_$safeName';
-      final perturbedPath = '${user.id}/${timestamp}_perturbed_$safeName';
+      final path = '${user.id}/${timestamp}_$safeName';
 
       await Supabase.instance.client.storage.from('datasets').uploadBinary(
-        rawPath,
-        Uint8List.fromList(utf8.encode(rawCsvString)),
-        fileOptions: const FileOptions(contentType: 'text/csv'),
-      );
-      
-      await Supabase.instance.client.storage.from('datasets').uploadBinary(
-        perturbedPath,
-        Uint8List.fromList(utf8.encode(perturbedCsvString)),
+        path,
+        Uint8List.fromList(utf8.encode(csvString)),
         fileOptions: const FileOptions(contentType: 'text/csv'),
       );
 
       final insertedRows = await Supabase.instance.client.from('datasets').insert({
         'user_id': user.id,
         'filename': displayName,
-        'raw_filepath': rawPath,
-        'perturbed_filepath': perturbedPath,
+        'filepath': path,
         'is_public': isPublic,
       }).select('*');
 
@@ -803,23 +670,17 @@ class _MapPageState extends State<MapPage> {
         final newDataset = insertedRows.first;
         setState(() {
           _selectedDataset = newDataset;
-          _showCA = true;
+          _showCA = false;
           _showKriging = false;
-          _showPlantations = true;
+          _showPlantations = false;
           _caPolygons.clear();
           _krigingPolygons.clear();
           _plantationsData.clear();
           // Ensure it's in the list if _fetchDatasets missed it due to replication lag
-          if (!_availableDatasets.any((d) => d['raw_filepath'] == newDataset['raw_filepath'])) {
+          if (!_availableDatasets.any((d) => d['filepath'] == newDataset['filepath'])) {
             _availableDatasets.insert(0, newDataset);
           }
         });
-        final isOwner = newDataset['user_id'] == Supabase.instance.client.auth.currentUser?.id;
-        final path = isOwner ? newDataset['raw_filepath'] : newDataset['perturbed_filepath'];
-        final url = Supabase.instance.client.storage.from('datasets').getPublicUrl(path);
-        _fetchForecast(_caSteps, url);
-        _fetchKriging(url);
-        _fetchPlantations(url);
       }
       
     } catch (e) {
@@ -857,11 +718,11 @@ class _MapPageState extends State<MapPage> {
       
       // Soft-delete database row using a secure RPC to bypass RLS check quirks
       await Supabase.instance.client
-          .rpc('soft_delete_dataset', params: {'filepath': dataset['raw_filepath']});
+          .rpc('soft_delete_dataset', params: {'filepath': dataset['filepath']});
 
       setState(() {
-        _availableDatasets.removeWhere((d) => d['raw_filepath'] == dataset['raw_filepath']);
-        if (_selectedDataset != null && _selectedDataset!['raw_filepath'] == dataset['raw_filepath']) {
+        _availableDatasets.removeWhere((d) => d['filepath'] == dataset['filepath']);
+        if (_selectedDataset != null && _selectedDataset!['filepath'] == dataset['filepath']) {
           _selectedDataset = null;
           _showCA = false;
           _showKriging = false;
@@ -879,6 +740,54 @@ class _MapPageState extends State<MapPage> {
     } catch (e) {
       debugPrint('Delete error: $e');
       _showToast('Failed to delete: $e', isError: true);
+    }
+  }
+
+  Future<void> _toggleDatasetVisibility(Map<String, dynamic> dataset, bool newValue) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Change Dataset Visibility'),
+        content: Text(
+          newValue
+              ? 'Make "${dataset['filename']}" public? Other users will be able to view this dataset, but exact coordinates will be hidden unless they are the owner.'
+              : 'Make "${dataset['filename']}" private? Other users will no longer be able to view this dataset.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.green.shade700, foregroundColor: Colors.white),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Proceed'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    try {
+      await Supabase.instance.client
+          .from('datasets')
+          .update({'is_public': newValue})
+          .eq('filepath', dataset['filepath']);
+
+      setState(() {
+        dataset['is_public'] = newValue;
+        for (final d in _availableDatasets) {
+          if (d['filepath'] == dataset['filepath']) d['is_public'] = newValue;
+        }
+        if (_selectedDataset != null && _selectedDataset!['filepath'] == dataset['filepath']) {
+          _selectedDataset!['is_public'] = newValue;
+        }
+      });
+      _showToast('Dataset visibility updated.', isError: false);
+    } catch (e) {
+      debugPrint('Visibility update error: $e');
+      _showToast('Failed to update visibility: $e', isError: true);
     }
   }
 
@@ -1248,8 +1157,8 @@ class _MapPageState extends State<MapPage> {
 
     return filtered.map((obs) {
       final coords = _parseCoordinates(obs['coordinates']);
-      final lat = coords?['lat'] ?? 0.0;
-      final lng = coords?['lng'] ?? 0.0;
+      final double lat = obs['latitude'] != null ? double.tryParse(obs['latitude'].toString()) ?? (coords?['lat'] ?? 0.0) : (coords?['lat'] ?? 0.0);
+      final double lng = obs['longitude'] != null ? double.tryParse(obs['longitude'].toString()) ?? (coords?['lng'] ?? 0.0) : (coords?['lng'] ?? 0.0);
       final confidence = double.tryParse(obs['confidence_score']?.toString() ?? '') ?? 0.0;
       final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
       
@@ -1941,7 +1850,7 @@ class _MapPageState extends State<MapPage> {
                                         itemCount: _filteredDatasets.length,
                                         itemBuilder: (context, index) {
                                           final dataset = _filteredDatasets[index];
-                                          final isSelected = _selectedDataset != null && _selectedDataset!['raw_filepath'] == dataset['raw_filepath'];
+                                          final isSelected = _selectedDataset != null && _selectedDataset!['filepath'] == dataset['filepath'];
                                           final isOwner = dataset['user_id'] == Supabase.instance.client.auth.currentUser?.id;
                                           final uploaderName = dataset['users'] != null && dataset['users'] is Map
                                               ? (dataset['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
@@ -1963,18 +1872,38 @@ class _MapPageState extends State<MapPage> {
                                                 children: [
                                                   Expanded(child: Text(dataset['filename'] ?? 'Dataset', style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)),
                                                   const SizedBox(width: 4),
-                                                  Container(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                                    decoration: BoxDecoration(
-                                                      color: dataset['is_public'] == true ? Colors.green.shade50 : Colors.grey.shade100,
-                                                      borderRadius: BorderRadius.circular(4),
-                                                      border: Border.all(color: dataset['is_public'] == true ? Colors.green.shade200 : Colors.grey.shade300),
+                                                  if (isOwner)
+                                                    Row(
+                                                      mainAxisSize: MainAxisSize.min,
+                                                      children: [
+                                                        Text(
+                                                          dataset['is_public'] == true ? 'Public' : 'Private',
+                                                          style: TextStyle(fontSize: 9, color: dataset['is_public'] == true ? Colors.green.shade700 : Colors.grey.shade700, fontWeight: FontWeight.bold),
+                                                        ),
+                                                        Transform.scale(
+                                                          scale: 0.6,
+                                                          child: Switch(
+                                                            value: dataset['is_public'] == true,
+                                                            activeTrackColor: Colors.green.shade200,
+                                                            activeThumbColor: Colors.green.shade700,
+                                                            onChanged: (val) => _toggleDatasetVisibility(dataset, val),
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    )
+                                                  else
+                                                    Container(
+                                                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                                      decoration: BoxDecoration(
+                                                        color: dataset['is_public'] == true ? Colors.green.shade50 : Colors.grey.shade100,
+                                                        borderRadius: BorderRadius.circular(4),
+                                                        border: Border.all(color: dataset['is_public'] == true ? Colors.green.shade200 : Colors.grey.shade300),
+                                                      ),
+                                                      child: Text(
+                                                        dataset['is_public'] == true ? 'Public' : 'Private',
+                                                        style: TextStyle(fontSize: 9, color: dataset['is_public'] == true ? Colors.green.shade700 : Colors.grey.shade700, fontWeight: FontWeight.bold),
+                                                      ),
                                                     ),
-                                                    child: Text(
-                                                      dataset['is_public'] == true ? 'Public' : 'Private',
-                                                      style: TextStyle(fontSize: 9, color: dataset['is_public'] == true ? Colors.green.shade700 : Colors.grey.shade700, fontWeight: FontWeight.bold),
-                                                    ),
-                                                  ),
                                                 ],
                                               ),
                                               subtitle: Text('By: $uploaderName • $dateStr', style: const TextStyle(fontSize: 10)),
@@ -2007,8 +1936,7 @@ class _MapPageState extends State<MapPage> {
                                                   _selectedPlantation = null;
                                                   _selectedObservation = null;
                                                 });
-                                                final path = isOwner ? dataset['raw_filepath'] : dataset['perturbed_filepath'];
-                                                final url = Supabase.instance.client.storage.from('datasets').getPublicUrl(path);
+                                                final url = Supabase.instance.client.storage.from('datasets').getPublicUrl(dataset['filepath']);
                                                 _fetchForecast(_caSteps, url);
                                                 _fetchKriging(url);
                                                 _fetchPlantations(url);
@@ -2043,9 +1971,7 @@ class _MapPageState extends State<MapPage> {
                                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(4)),
                                           ),
                                           onPressed: () {
-                                            final isOwner = _selectedDataset!['user_id'] == Supabase.instance.client.auth.currentUser?.id;
-                                            final path = isOwner ? _selectedDataset!['raw_filepath'] : _selectedDataset!['perturbed_filepath'];
-                                            final url = Supabase.instance.client.storage.from('datasets').getPublicUrl(path);
+                                            final url = Supabase.instance.client.storage.from('datasets').getPublicUrl(_selectedDataset!['filepath']);
                                             launchUrl(Uri.parse(url));
                                           },
                                         ),
@@ -2147,9 +2073,7 @@ class _MapPageState extends State<MapPage> {
                                 },
                                 onChangeEnd: (val) {
                                   if (_selectedDataset != null) {
-                                    final isOwner = _selectedDataset!['user_id'] == Supabase.instance.client.auth.currentUser?.id;
-                                    final path = isOwner ? _selectedDataset!['raw_filepath'] : _selectedDataset!['perturbed_filepath'];
-                                    final url = Supabase.instance.client.storage.from('datasets').getPublicUrl(path);
+                                    final url = Supabase.instance.client.storage.from('datasets').getPublicUrl(_selectedDataset!['filepath']);
                                     _fetchForecast(val.round(), url);
                                   }
                                 },
