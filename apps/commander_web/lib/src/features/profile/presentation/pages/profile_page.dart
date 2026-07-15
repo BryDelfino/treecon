@@ -31,10 +31,20 @@ class _ProfilePageState extends State<ProfilePage> {
     super.initState();
     _userService = UserService(Supabase.instance.client);
     _fetchProfile();
+    _usernameController.addListener(_onFieldChanged);
+    _passwordController.addListener(_onFieldChanged);
+    _confirmPasswordController.addListener(_onFieldChanged);
+  }
+
+  void _onFieldChanged() {
+    setState(() {});
   }
 
   @override
   void dispose() {
+    _usernameController.removeListener(_onFieldChanged);
+    _passwordController.removeListener(_onFieldChanged);
+    _confirmPasswordController.removeListener(_onFieldChanged);
     _usernameController.dispose();
     _passwordController.dispose();
     _confirmPasswordController.dispose();
@@ -409,7 +419,11 @@ class _ProfilePageState extends State<ProfilePage> {
                                 padding: const EdgeInsets.symmetric(vertical: 16),
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                               ),
-                              onPressed: _isSavingUsername ? null : _updateUsername,
+                              onPressed: (_isSavingUsername ||
+                                      _usernameController.text.trim().isEmpty ||
+                                      _usernameController.text.trim() == (_profile?['user_name'] ?? '').toString().trim())
+                                  ? null
+                                  : _updateUsername,
                               icon: _isSavingUsername
                                   ? const SizedBox(
                                       width: 18,
@@ -518,7 +532,11 @@ class _ProfilePageState extends State<ProfilePage> {
                                   padding: const EdgeInsets.symmetric(vertical: 16),
                                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                                 ),
-                                onPressed: _isSavingPassword ? null : _updatePassword,
+                                onPressed: (_isSavingPassword ||
+                                        _passwordController.text.isEmpty ||
+                                        _confirmPasswordController.text.isEmpty)
+                                    ? null
+                                    : _updatePassword,
                                 icon: _isSavingPassword
                                     ? const SizedBox(
                                         width: 18,
