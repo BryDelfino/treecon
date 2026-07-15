@@ -1,11 +1,8 @@
 // ignore_for_file: avoid_dynamic_calls
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:shared_services/shared_services.dart';
 import 'package:intl/intl.dart';
-import 'package:flutter/services.dart';
-import 'dart:convert';
 import 'dart:typed_data';
-import 'package:latlong2/latlong.dart';
 class ObservationDetailsPanel extends StatefulWidget {
   final Map<String, dynamic> obs;
   final VoidCallback onClose;
@@ -54,63 +51,14 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
       if (mounted) setState(() { _province = 'Unknown'; _isLoadingProvince = false; });
       return;
     }
-    try {
-      final String geoJsonString = await rootBundle.loadString('assets/philippines.json');
-      final data = json.decode(geoJsonString);
-      final features = data['features'] as List;
-      final point = LatLng(lat, lng);
 
-      for (var feature in features) {
-        final props = feature['properties'];
-        final geometry = feature['geometry'];
-        if (geometry == null) continue;
-        final type = geometry['type'];
-        final coordsList = geometry['coordinates'] as List;
-
-        if (type == 'Polygon') {
-          final ring = coordsList[0] as List;
-          final points = ring.map((c) => LatLng((c[1] as num).toDouble(), (c[0] as num).toDouble())).toList();
-          if (_isPointInPolygon(point, points)) {
-            if (props != null && props['adm2_name'] != null && props['adm2_name'] != 'Special Geographic Area') {
-              if (mounted) setState(() { _province = props['adm2_name']; _isLoadingProvince = false; });
-              return;
-            }
-          }
-        } else if (type == 'MultiPolygon') {
-          for (var poly in coordsList) {
-            final ring = poly[0] as List;
-            final points = ring.map((c) => LatLng((c[1] as num).toDouble(), (c[0] as num).toDouble())).toList();
-            if (_isPointInPolygon(point, points)) {
-              if (props != null && props['adm2_name'] != null && props['adm2_name'] != 'Special Geographic Area') {
-                if (mounted) setState(() { _province = props['adm2_name']; _isLoadingProvince = false; });
-                return;
-              }
-            }
-          }
-        }
-      }
-      if (mounted) setState(() { _province = 'Unknown'; _isLoadingProvince = false; });
-    } catch (e) {
-      if (mounted) setState(() { _province = 'Unknown'; _isLoadingProvince = false; });
+    await ProvinceLookup.load();
+    if (mounted) {
+      setState(() {
+        _province = ProvinceLookup.provinceForPoint(lat, lng);
+        _isLoadingProvince = false;
+      });
     }
-  }
-
-  bool _isPointInPolygon(LatLng point, List<LatLng> polygon) {
-    int intersectCount = 0;
-    for (int j = 0; j < polygon.length - 1; j++) {
-      if (_rayCastIntersect(point, polygon[j], polygon[j + 1])) intersectCount++;
-    }
-    return (intersectCount % 2) == 1;
-  }
-
-  bool _rayCastIntersect(LatLng point, LatLng vertA, LatLng vertB) {
-    double aY = vertA.latitude, bY = vertB.latitude, aX = vertA.longitude, bX = vertB.longitude;
-    double pY = point.latitude, pX = point.longitude;
-    if ((aY > pY && bY > pY) || (aY < pY && bY < pY) || (aX < pX && bX < pX)) return false;
-    double m = (aY - bY) / (aX - bX);
-    double bee = (-aX) * m + aY;
-    double x = (pY - bee) / m;
-    return x > pX;
   }
 
   Map<String, double>? _parseCoordinates(dynamic coords) {
