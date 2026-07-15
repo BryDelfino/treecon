@@ -15,14 +15,18 @@ import 'package:intl/intl.dart';
 import 'package:scout_mobile/src/features/observations/presentation/pages/observation_details_page.dart';
 
 class MapPage extends StatefulWidget {
-  const MapPage({super.key});
+  final Map<String, dynamic>? highlightObservation;
+
+  const MapPage({super.key, this.highlightObservation});
 
   @override
   State<MapPage> createState() => _MapPageState();
 }
 
-class _MapPageState extends State<MapPage> {
+class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
   final _mapController = MapController();
+  LatLng? _highlightedLatLng;
+  late final AnimationController _highlightPulseController;
   List<Polygon> _caPolygons = [];
   List<Polygon> _krigingPolygons = [];
   bool _isLoading = true;
@@ -95,7 +99,7 @@ class _MapPageState extends State<MapPage> {
   final List<String> _availableSeverities = ['All', 'Healthy', 'Low', 'Moderate', 'High', 'Severe'];
 
   // Observations state
-  bool _showObservations = false;
+  bool _showObservations = true;
   bool _isObservationsExpanded = false;
   String _selectedObservationVerification = 'All';
   String _selectedObservationUserRole = 'All';
@@ -103,6 +107,7 @@ class _MapPageState extends State<MapPage> {
   DateTime? _observationStartDate;
   DateTime? _observationEndDate;
   bool _showMyObservationsOnly = false;
+  bool _hideAnonymousObservations = false;
   List<Map<String, dynamic>> _observationsData = [];
   final List<String> _availableVerificationStatuses = ['All', 'Verified', 'Unverified'];
   final List<String> _availableUserRoles = ['All', 'Expert', 'Community'];
@@ -114,12 +119,27 @@ class _MapPageState extends State<MapPage> {
   @override
   void initState() {
     super.initState();
+    _highlightPulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    );
     final hasSession = Supabase.instance.client.auth.currentSession != null;
+    if (widget.highlightObservation != null) {
+      _showObservations = true;
+    }
     if (NetworkService.instance.isOnline && hasSession) {
       _loadCountryBoundary();
       _fetchDatasets();
+      if (widget.highlightObservation != null) {
+        _fetchObservations().then((_) => _applyHighlightedObservation());
+      } else if (_showObservations) {
+        _fetchObservations();
+      }
     } else {
       _isLoading = false;
+      if (widget.highlightObservation != null) {
+        _applyHighlightedObservation();
+      }
     }
 
     _networkSub = NetworkService.instance.onConnectivityChanged.listen((isOnline) {
@@ -141,6 +161,7 @@ class _MapPageState extends State<MapPage> {
   @override
   void dispose() {
     _networkSub?.cancel();
+    _highlightPulseController.dispose();
     super.dispose();
   }
 
@@ -448,13 +469,38 @@ class _MapPageState extends State<MapPage> {
 
   void _showToast(String message, {bool isError = true}) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).clearSnackBars();
-    ScaffoldMessenger.of(context).showSnackBar(
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.clearSnackBars();
+    messenger.showSnackBar(
       SnackBar(
-        content: Text(message),
+        content: Row(
+          children: [
+            Icon(
+              isError ? Icons.error_outline_rounded : Icons.check_circle_outline_rounded,
+              color: Colors.white,
+              size: 20,
+            ),
+            const SizedBox(width: 12.0),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(fontWeight: FontWeight.w500, color: Colors.white),
+              ),
+            ),
+            const SizedBox(width: 8.0),
+            IconButton(
+              icon: const Icon(Icons.close_rounded, color: Colors.white70, size: 18),
+              onPressed: () => messenger.hideCurrentSnackBar(),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(),
+              splashRadius: 16.0,
+            ),
+          ],
+        ),
         backgroundColor: isError ? Colors.red[800] : Colors.green[800],
         behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12.0)),
+        margin: const EdgeInsets.all(16.0),
       ),
     );
   }
@@ -561,6 +607,65 @@ class _MapPageState extends State<MapPage> {
     }
   }
 
+  Future<void> _applyHighlightedObservation() async {
+    final rawObs = widget.highlightObservation;
+    if (rawObs == null || !mounted) return;
+
+    Map<String, dynamic> obs = rawObs;
+    final id = rawObs['observation_id'] ?? rawObs['id'];
+    final currentUser = Supabase.instance.client.auth.currentUser;
+
+    // The obs passed in from "My Observations" doesn't include the joined
+    // owner profile (it's always the current user's own, so it's normally
+    // omitted). Attach it here so the map popup doesn't show "Unknown User".
+    if (rawObs['users'] == null && currentUser != null && NetworkService.instance.isOnline) {
+      try {
+        final profile = await Supabase.instance.client
+            .from('users')
+            .select('user_name, role, avatar_url')
+            .eq('user_id', currentUser.id)
+            .maybeSingle();
+        if (profile != null) {
+          obs = {...rawObs, 'users': profile};
+        }
+      } catch (e) {
+        debugPrint('[OBS] highlight profile fetch error: $e');
+      }
+    }
+
+    if (!mounted) return;
+
+    final alreadyPresent = _observationsData.any((o) => (o['observation_id'] ?? o['id']) == id);
+    if (!alreadyPresent) {
+      setState(() {
+        _observationsData = [..._observationsData, obs];
+      });
+    } else if (obs['users'] != null) {
+      setState(() {
+        _observationsData = _observationsData
+            .map((o) => (o['observation_id'] ?? o['id']) == id ? obs : o)
+            .toList();
+      });
+    }
+
+    final coords = _parseCoordinates(obs['coordinates']);
+    final double? lat = obs['latitude'] != null ? double.tryParse(obs['latitude'].toString()) : coords?['lat'];
+    final double? lng = obs['longitude'] != null ? double.tryParse(obs['longitude'].toString()) : coords?['lng'];
+    if (lat == null || lng == null) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _mapController.move(LatLng(lat, lng), 17);
+      setState(() {
+        _highlightedLatLng = LatLng(lat, lng);
+      });
+      _highlightPulseController
+        ..reset()
+        ..repeat();
+      _showObservationInfoSheet(obs);
+    });
+  }
+
   Map<String, double>? _parseCoordinates(dynamic coords) {
     if (coords == null) return null;
     if (coords is Map) {
@@ -630,6 +735,12 @@ class _MapPageState extends State<MapPage> {
 
       if (_showMyObservationsOnly && obs['user_id'] != Supabase.instance.client.auth.currentUser?.id) return false;
 
+      if (_hideAnonymousObservations &&
+          obs['is_anonymous'] == true &&
+          obs['user_id'] != Supabase.instance.client.auth.currentUser?.id) {
+        return false;
+      }
+
       if (_observationStartDate != null || _observationEndDate != null) {
         final obsDateStr = obs['observation_timestamp'] as String?;
         if (obsDateStr != null) {
@@ -698,11 +809,10 @@ class _MapPageState extends State<MapPage> {
     final rawDate = rawTimestamp != null ? DateTime.tryParse(rawTimestamp.toString()) : null;
     final date = rawDate != null ? DateFormat.yMMMd().add_jm().format(rawDate.toLocal()) : 'Unknown Date';
     final imageUrl = obs['image_url']?.toString();
-    final confidence = obs['confidence_score']?.toString() ?? 'N/A';
     final remarks = obs['remarks']?.toString() ?? 'No remarks provided.';
 
     final isAnonymous = obs['is_anonymous'] == true;
-    final contributorName = isAnonymous 
+    final contributorName = (isAnonymous && !isOwner)
         ? 'Anonymous Scout'
         : (obs['users'] != null && obs['users'] is Map
             ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
@@ -711,8 +821,8 @@ class _MapPageState extends State<MapPage> {
         ? (obs['users'] as Map)['role']?.toString().toUpperCase()
         : null;
     final isExpert = role == 'EXPERT';
-    final avatarUrl = isAnonymous 
-        ? null 
+    final avatarUrl = (isAnonymous && !isOwner)
+        ? null
         : (obs['users'] != null && obs['users'] is Map
             ? (obs['users'] as Map)['avatar_url']?.toString()
             : null);
@@ -793,6 +903,10 @@ class _MapPageState extends State<MapPage> {
                     const Icon(Icons.person, size: 14, color: Colors.grey),
                   const SizedBox(width: 4),
                   Text(contributorName, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                  if (isAnonymous && isOwner) ...[
+                    const SizedBox(width: 4),
+                    Icon(Icons.visibility_off_rounded, size: 13, color: Colors.purple[700]),
+                  ],
                   if (isExpert) ...[
                     const SizedBox(width: 4),
                     Container(
@@ -809,10 +923,7 @@ class _MapPageState extends State<MapPage> {
               if (isOwner)
                 Text("Lat/Lng: ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}", style: const TextStyle(fontSize: 13)),
               const SizedBox(height: 8),
-              const Text("Confidence Score", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
-              Text("$confidence%", style: const TextStyle(fontSize: 13)),
-              const SizedBox(height: 8),
-              
+
               (() {
                 final hasRemarks = remarks.trim().isNotEmpty;
                 final isPending = obs['under_verification'] == true || obs['verification_result'] == 'PENDING';
@@ -839,38 +950,45 @@ class _MapPageState extends State<MapPage> {
                 return const SizedBox.shrink();
               })(),
               
-              const SizedBox(height: 16),
-              
-              SizedBox(
-                width: double.infinity,
-                child: FilledButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context); // Close bottom sheet
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (context) => ObservationDetailsPage(
-                          obs: obs,
-                          isCached: false,
+              if (isOwner) ...[
+                const SizedBox(height: 16),
+                SizedBox(
+                  width: double.infinity,
+                  child: FilledButton.icon(
+                    onPressed: () {
+                      Navigator.pop(context); // Close bottom sheet
+                      Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (context) => ObservationDetailsPage(
+                            obs: obs,
+                            isCached: false,
+                          ),
                         ),
-                      ),
-                    ).then((result) {
-                      if (result != null) {
-                        _fetchObservations();
-                      }
-                    });
-                  },
-                  icon: const Icon(Icons.info_outline),
-                  label: const Text('View Details'),
+                      ).then((result) {
+                        if (result != null) {
+                          _fetchObservations();
+                        }
+                      });
+                    },
+                    icon: const Icon(Icons.info_outline),
+                    label: const Text('View Details'),
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
             ),
           ),
         );
       },
-    );
+    ).whenComplete(() {
+      if (!mounted) return;
+      _highlightPulseController.stop();
+      setState(() {
+        _highlightedLatLng = null;
+      });
+    });
   }
 
   // --- Kriging Fetch ---
@@ -1707,6 +1825,19 @@ class _MapPageState extends State<MapPage> {
                               });
                             },
                           ),
+                          SwitchListTile(
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text("Hide Anonymous Observations", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            value: _hideAnonymousObservations,
+                            onChanged: (val) {
+                              setModalState(() {
+                                _hideAnonymousObservations = val;
+                              });
+                              setState(() {
+                                _hideAnonymousObservations = val;
+                              });
+                            },
+                          ),
                         ],
                       ),
 
@@ -2139,6 +2270,58 @@ class _MapPageState extends State<MapPage> {
                                 );
                               },
                             ),
+                          ),
+
+                        // Pulsing highlight ring for a programmatically focused observation,
+                        // mimicking a spiderfy "unfold" reveal without disabling clustering.
+                        if (_highlightedLatLng != null)
+                          MarkerLayer(
+                            markers: [
+                              Marker(
+                                point: _highlightedLatLng!,
+                                width: 90,
+                                height: 90,
+                                alignment: Alignment.center,
+                                child: IgnorePointer(
+                                  child: AnimatedBuilder(
+                                    animation: _highlightPulseController,
+                                    builder: (context, child) {
+                                      final t = _highlightPulseController.value;
+                                      final scale = 0.3 + (t * 1.4);
+                                      final opacity = (1 - t).clamp(0.0, 1.0);
+                                      return Stack(
+                                        alignment: Alignment.center,
+                                        children: [
+                                          Transform.scale(
+                                            scale: scale,
+                                            child: Container(
+                                              width: 56,
+                                              height: 56,
+                                              decoration: BoxDecoration(
+                                                shape: BoxShape.circle,
+                                                color: Colors.orange.withValues(alpha: opacity * 0.45),
+                                              ),
+                                            ),
+                                          ),
+                                          Container(
+                                            width: 20,
+                                            height: 20,
+                                            decoration: BoxDecoration(
+                                              shape: BoxShape.circle,
+                                              color: Colors.orange.shade700,
+                                              border: Border.all(color: Colors.white, width: 3),
+                                              boxShadow: const [
+                                                BoxShadow(color: Colors.black38, blurRadius: 4, offset: Offset(0, 1)),
+                                              ],
+                                            ),
+                                          ),
+                                        ],
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                       ],
                     ),
