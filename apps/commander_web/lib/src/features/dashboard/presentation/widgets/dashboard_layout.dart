@@ -42,6 +42,7 @@ class _DashboardLayoutState extends State<DashboardLayout> {
           .eq('under_verification', true)
           .eq('is_public', true)
           .eq('verification_result', 'PENDING')
+          .or('is_deleted.eq.false,is_deleted.is.null')
           .count(CountOption.exact);
       if (mounted) {
         setState(() {
