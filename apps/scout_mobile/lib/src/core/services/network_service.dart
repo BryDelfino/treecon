@@ -8,6 +8,7 @@ class NetworkService {
 
   final Connectivity _connectivity = Connectivity();
   final StreamController<bool> _connectivityController = StreamController<bool>.broadcast();
+  Timer? _forcedOfflineRetryTimer;
 
   bool _isOnline = false;
 
@@ -56,7 +57,28 @@ class NetworkService {
     }
   }
 
+  /// Call this when a network request stalls for too long (e.g. a weak
+  /// connection that still reports as "connected"). Flips the app into
+  /// offline mode immediately, then periodically re-checks in the
+  /// background until real connectivity is confirmed again.
+  void forceOffline() {
+    if (!_isOnline) return;
+    _isOnline = false;
+    _connectivityController.add(false);
+
+    _forcedOfflineRetryTimer?.cancel();
+    _forcedOfflineRetryTimer = Timer.periodic(const Duration(seconds: 30), (timer) async {
+      final results = await _connectivity.checkConnectivity();
+      await _updateConnectionStatus(results);
+      if (_isOnline) {
+        timer.cancel();
+        _forcedOfflineRetryTimer = null;
+      }
+    });
+  }
+
   void dispose() {
+    _forcedOfflineRetryTimer?.cancel();
     _connectivityController.close();
   }
 }
