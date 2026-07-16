@@ -40,8 +40,10 @@ class _ObservationPageState extends State<ObservationPage> {
   String _filterVisibility = 'All'; // All, Public, Private
   String _filterStorage = 'All'; // All, Local Only, Synced Only
   String _filterProvince = 'All';
+  String _filterSource = 'All'; // All, Mobile, Web
   bool _filterAnonymousOnly = false;
   bool _sortAscending = false;
+  String? _currentUserRole;
 
   late final StreamSubscription<bool> _networkSub;
 
@@ -100,6 +102,15 @@ class _ObservationPageState extends State<ObservationPage> {
       final user = Supabase.instance.client.auth.currentUser;
       if (isOnline && user != null) {
         try {
+          final currentUserProfile = await Supabase.instance.client
+              .from('users')
+              .select('role')
+              .eq('user_id', user.id)
+              .maybeSingle();
+          if (currentUserProfile != null) {
+            _currentUserRole = currentUserProfile['role']?.toString().toUpperCase();
+          }
+
           final data = await Supabase.instance.client
               .from('observations')
               .select('*, verifier:users!observations_verifier_id_fkey(user_name)')
@@ -435,6 +446,13 @@ class _ObservationPageState extends State<ObservationPage> {
         if (!isAnonymous) return false;
       }
 
+      // Source filter (expert users only)
+      if (_currentUserRole == 'EXPERT' && _filterSource != 'All') {
+        final source = obs['source']?.toString().toUpperCase();
+        if (_filterSource == 'Mobile' && source != 'MOBILE') return false;
+        if (_filterSource == 'Web' && source != 'WEB') return false;
+      }
+
       // Province filter
       if (_filterProvince != 'All') {
         final coords = _parseCoordinates(obs['coordinates']);
@@ -490,9 +508,11 @@ class _ObservationPageState extends State<ObservationPage> {
                         children: [
                           if (isOnline) ...[
                           // Storage Filter
+                          const SizedBox(height: 8),
                           InputDecorator(
                             decoration: InputDecoration(
                               labelText: 'Storage State',
+                              floatingLabelBehavior: FloatingLabelBehavior.always,
                               prefixIcon: Icon(Icons.storage, color: Colors.green[700]),
                               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                               contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -535,6 +555,7 @@ class _ObservationPageState extends State<ObservationPage> {
                           InputDecorator(
                             decoration: InputDecoration(
                               labelText: 'Verification State',
+                              floatingLabelBehavior: FloatingLabelBehavior.always,
                               prefixIcon: Icon(Icons.verified_outlined, color: _filterStorage == 'Local Only' ? Colors.grey : Colors.green[700]),
                               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                               contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -569,6 +590,7 @@ class _ObservationPageState extends State<ObservationPage> {
                           InputDecorator(
                             decoration: InputDecoration(
                               labelText: 'Verification Status',
+                              floatingLabelBehavior: FloatingLabelBehavior.always,
                               prefixIcon: Icon(Icons.fact_check_outlined, color: (_filterStorage == 'Local Only' || _filterVerificationState == 'Unverified') ? Colors.grey : Colors.green[700]),
                               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                               contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -605,6 +627,7 @@ class _ObservationPageState extends State<ObservationPage> {
                           InputDecorator(
                             decoration: InputDecoration(
                               labelText: 'Visibility',
+                              floatingLabelBehavior: FloatingLabelBehavior.always,
                               prefixIcon: Icon(Icons.public, color: (isOnline && _filterVerificationStatus == 'Rejected') ? Colors.grey : Colors.green[700]),
                               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                               contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -678,6 +701,7 @@ class _ObservationPageState extends State<ObservationPage> {
                           InputDecorator(
                             decoration: InputDecoration(
                               labelText: 'Province',
+                              floatingLabelBehavior: FloatingLabelBehavior.always,
                               prefixIcon: Icon(Icons.map_outlined, color: Colors.green[700]),
                               border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                               contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
@@ -705,6 +729,36 @@ class _ObservationPageState extends State<ObservationPage> {
                               ),
                             ),
                           ),
+                          if (_currentUserRole == 'EXPERT') ...[
+                            const SizedBox(height: 16),
+                            // Source Filter
+                            InputDecorator(
+                              decoration: InputDecoration(
+                                labelText: 'Source',
+                                floatingLabelBehavior: FloatingLabelBehavior.always,
+                                prefixIcon: Icon(Icons.devices_outlined, color: Colors.green[700]),
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                              ),
+                              child: DropdownButtonHideUnderline(
+                                child: DropdownButton<String>(
+                                  value: _filterSource,
+                                  isExpanded: true,
+                                  items: const [
+                                    DropdownMenuItem(value: 'All', child: Text('All Sources')),
+                                    DropdownMenuItem(value: 'Mobile', child: Text('Mobile')),
+                                    DropdownMenuItem(value: 'Web', child: Text('Web')),
+                                  ],
+                                  onChanged: (val) {
+                                    if (val != null) {
+                                      setModalState(() => _filterSource = val);
+                                      setState(() => _filterSource = val);
+                                    }
+                                  },
+                                ),
+                              ),
+                            ),
+                          ],
                           const SizedBox(height: 16),
                           // Anonymity Filter
                           Container(
@@ -713,15 +767,15 @@ class _ObservationPageState extends State<ObservationPage> {
                               borderRadius: BorderRadius.circular(12),
                               border: Border.all(color: Colors.grey.shade300),
                             ),
-                            child: SwitchListTile(
+                            child: CheckboxListTile(
+                              controlAffinity: ListTileControlAffinity.trailing,
                               title: const Text('Anonymous Only', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                               subtitle: const Text('Show only observations submitted anonymously', style: TextStyle(fontSize: 11)),
                               value: _filterAnonymousOnly,
-                              activeTrackColor: Colors.green.shade200,
-                              activeThumbColor: Colors.green.shade700,
+                              activeColor: Colors.green.shade700,
                               onChanged: (val) {
-                                setModalState(() => _filterAnonymousOnly = val);
-                                setState(() => _filterAnonymousOnly = val);
+                                setModalState(() => _filterAnonymousOnly = val ?? false);
+                                setState(() => _filterAnonymousOnly = val ?? false);
                               },
                             ),
                           ),
@@ -743,6 +797,7 @@ class _ObservationPageState extends State<ObservationPage> {
                               _filterVisibility = 'All';
                               _filterStorage = 'All';
                               _filterProvince = 'All';
+                              _filterSource = 'All';
                               _filterAnonymousOnly = false;
                             });
                             setState(() {
@@ -753,6 +808,7 @@ class _ObservationPageState extends State<ObservationPage> {
                               _filterVisibility = 'All';
                               _filterStorage = 'All';
                               _filterProvince = 'All';
+                              _filterSource = 'All';
                               _filterAnonymousOnly = false;
                             });
                           },
@@ -793,7 +849,7 @@ class _ObservationPageState extends State<ObservationPage> {
 
   @override
   Widget build(BuildContext context) {
-    final hasActiveFilter = _filterStartDate != null || _filterEndDate != null || _filterVerificationState != 'All' || _filterVerificationStatus != 'All' || _filterVisibility != 'All' || _filterStorage != 'All' || _filterProvince != 'All' || _filterAnonymousOnly;
+    final hasActiveFilter = _filterStartDate != null || _filterEndDate != null || _filterVerificationState != 'All' || _filterVerificationStatus != 'All' || _filterVisibility != 'All' || _filterStorage != 'All' || _filterProvince != 'All' || _filterSource != 'All' || _filterAnonymousOnly;
 
     return PopScope(
       canPop: false,
@@ -864,7 +920,9 @@ class _ObservationPageState extends State<ObservationPage> {
                   );
                   if (result is String) {
                     await _fetchObservations();
-                    _syncSingleObservation(result);
+                    // Confirmation already happened on the Add Observation page
+                    // before saving, when "Sync Immediately" was checked.
+                    _syncSingleObservation(result, skipConfirmation: true);
                   } else if (result == true) {
                     _fetchObservations();
                   }
@@ -1140,6 +1198,7 @@ class _ObservationPageState extends State<ObservationPage> {
     final isPublic = obs['is_public'] == true;
     final isAnonymous = obs['is_anonymous'] == true;
     final remarks = obs['remarks']?.toString();
+    final source = obs['source']?.toString().toUpperCase() ?? 'UPLOAD';
 
     String verifyText = 'UNVERIFIED';
     Color verifyBg = Colors.grey[100]!;
@@ -1180,7 +1239,8 @@ class _ObservationPageState extends State<ObservationPage> {
               builder: (context) => ObservationDetailsPage(
                 obs: obs,
                 isCached: isLocal,
-                showViewOnMapButton: true,
+                showViewOnMapButton: !isLocal && verificationResult != 'REJECTED',
+                currentUserRole: _currentUserRole,
               ),
             ),
           );
@@ -1263,7 +1323,32 @@ class _ObservationPageState extends State<ObservationPage> {
                           spacing: 6,
                           runSpacing: 4,
                           children: [
-    
+                            // Source Badge (expert users only)
+                            if (_currentUserRole == 'EXPERT')
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: Colors.blue[50],
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: Colors.blue[200]!),
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.camera_alt_outlined, size: 11, color: Colors.blue[700]),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      source,
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w800,
+                                        color: Colors.blue[700],
+                                        letterSpacing: 0.5,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
                             // Verification Badge
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
