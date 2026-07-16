@@ -254,7 +254,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
         final id = widget.obs['observation_id'];
         await Supabase.instance.client
             .from('observations')
-            .update({'is_deleted': true})
+            .update({'is_deleted': true, 'deleted_at': DateTime.now().toUtc().toIso8601String()})
             .eq('observation_id', id);
         if (mounted) {
           _showToast('Observation deleted successfully.', isError: false);
