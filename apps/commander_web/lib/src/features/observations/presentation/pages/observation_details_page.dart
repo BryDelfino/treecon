@@ -5,15 +5,28 @@ import 'package:shared_services/shared_services.dart';
 import 'dart:typed_data';
 import 'package:intl/intl.dart';
 import '../widgets/full_screen_image_viewer.dart';
+import '../../../map/presentation/pages/map.dart';
 
 class ObservationDetailsPage extends StatefulWidget {
   final Map<String, dynamic> obs;
   final bool isVerifyMode;
+  final bool showViewOnMapButton;
+  /// The viewing user's role (e.g. 'EXPERT'), if already known by the caller.
+  /// Passed down instead of fetched here so expert-only fields render
+  /// immediately with the rest of the page instead of popping in late.
+  final String? currentUserRole;
+  /// When set, "View on Map" pops back to the dashboard shell and calls
+  /// this to switch to the Spatial Map tab with the observation highlighted,
+  /// instead of pushing a full-screen route that hides the sidebar.
+  final void Function(Map<String, dynamic> obs)? onViewOnMap;
 
   const ObservationDetailsPage({
     super.key,
     required this.obs,
     required this.isVerifyMode,
+    this.showViewOnMapButton = true,
+    this.currentUserRole,
+    this.onViewOnMap,
   });
 
   @override
@@ -25,7 +38,11 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
   final TextEditingController _remarksController = TextEditingController();
   final _verificationFormKey = GlobalKey<FormState>();
   bool _isSubmitting = false;
-  
+  bool _isLoading = false;
+  bool _wasModified = false;
+  late bool _isPublic;
+  late bool _isAnonymous;
+
   String? _province;
   bool _isLoadingProvince = true;
 
@@ -34,6 +51,8 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
   @override
   void initState() {
     super.initState();
+    _isPublic = widget.obs['is_public'] == true;
+    _isAnonymous = widget.obs['is_anonymous'] == true;
     _fetchProvince();
     _setupRealtime();
   }
@@ -54,12 +73,17 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
           callback: (payload) {
             if (mounted && !_isSubmitting) {
               final newRow = payload.newRecord;
-              if (newRow['under_verification'] != true || newRow['is_public'] != true || newRow['is_deleted'] == true) {
+              if (widget.isVerifyMode && (newRow['under_verification'] != true || newRow['is_public'] != true || newRow['is_deleted'] == true)) {
                 _showToast('The user has dequeued, deleted, or made this observation private.', isError: true);
                 Navigator.pop(context, true); // Pop out and signal the list to refresh
               } else {
                 setState(() {
                   widget.obs['is_anonymous'] = newRow['is_anonymous'];
+                  widget.obs['is_public'] = newRow['is_public'];
+                  widget.obs['under_verification'] = newRow['under_verification'];
+                  widget.obs['verification_result'] = newRow['verification_result'];
+                  _isPublic = newRow['is_public'] == true;
+                  _isAnonymous = newRow['is_anonymous'] == true;
                 });
               }
             }
@@ -205,6 +229,276 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
     );
   }
 
+  bool _canManageObservationPrivacy({
+    required bool isOwner,
+    required String? verificationResult,
+  }) {
+    if (!isOwner) return false;
+    if (verificationResult?.toString().toUpperCase() == 'REJECTED') return false;
+    return true;
+  }
+
+  Future<bool> _showObservationConfirmation({
+    required String title,
+    required String message,
+    required String confirmLabel,
+    bool isDestructive = false,
+  }) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: Text(title),
+          content: Text(message),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              style: isDestructive ? FilledButton.styleFrom(backgroundColor: Colors.red) : null,
+              child: Text(confirmLabel),
+            ),
+          ],
+        );
+      },
+    );
+    return result ?? false;
+  }
+
+  Future<void> _updatePrivacySettings(bool newPublic, bool newAnon) async {
+    final obs = widget.obs;
+    final underVerification = obs['under_verification'] == true;
+    final id = obs['observation_id'] ?? obs['id'];
+    final isOwner = obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
+
+    if (!_canManageObservationPrivacy(
+      isOwner: isOwner,
+      verificationResult: obs['verification_result']?.toString(),
+    )) {
+      _showToast('Rejected observations cannot change their visibility settings.');
+      setState(() {
+        _isPublic = false;
+        _isAnonymous = obs['is_anonymous'] == true;
+      });
+      return;
+    }
+
+    final wasPublic = obs['is_public'] == true;
+    if (newPublic == false && wasPublic && underVerification) {
+      final confirm = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Warning'),
+          content: const Text('Setting this observation to private will also remove it from the expert verification queue. Do you want to proceed?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Proceed', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      );
+      if (confirm != true) {
+        setState(() {
+          _isPublic = obs['is_public'] == true;
+        });
+        return;
+      }
+    }
+
+    setState(() => _isLoading = true);
+    try {
+      final updates = <String, dynamic>{
+        'is_public': newPublic,
+        'is_anonymous': newAnon,
+      };
+
+      if (newPublic == false && wasPublic && underVerification) {
+        updates['under_verification'] = false;
+        updates['verification_result'] = null;
+      }
+
+      await Supabase.instance.client
+          .from('observations')
+          .update(updates)
+          .eq('observation_id', id);
+
+      if (mounted) {
+        setState(() {
+          _isPublic = newPublic;
+          _isAnonymous = newAnon;
+          obs['is_public'] = newPublic;
+          obs['is_anonymous'] = newAnon;
+          if (updates.containsKey('under_verification')) {
+            obs['under_verification'] = false;
+            obs['verification_result'] = null;
+          }
+        });
+        _wasModified = true;
+      }
+    } catch (e) {
+      _showToast('Failed to update privacy settings: $e');
+      if (mounted) {
+        setState(() {
+          _isPublic = obs['is_public'] == true;
+          _isAnonymous = obs['is_anonymous'] == true;
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _handleRequestVerification() async {
+    final obs = widget.obs;
+    if (obs['under_verification'] == true || obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED') {
+      _showToast('Observation is already under verification or verified.');
+      return;
+    }
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Verification Terms'),
+        content: const Text(
+            'By proceeding, your observation will be queued for expert verification. It must be set to public during this process.\n\n'
+            'Please ensure that the uploaded image is clear and the observation subject is distinctly visible to assist our experts.\n\n'
+            'While pending, you can withdraw your request, set it back to private, or delete it at any time.\n\n'
+            'However, if an expert REJECTS this observation, it can never be made public again, and you will have to eventually delete it. Do you wish to proceed?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Proceed', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    setState(() => _isLoading = true);
+    try {
+      final id = obs['observation_id'] ?? obs['id'];
+      await Supabase.instance.client
+          .from('observations')
+          .update({
+            'is_public': true,
+            'under_verification': true,
+            'verification_result': 'PENDING',
+          })
+          .eq('observation_id', id);
+
+      if (mounted) {
+        _showToast('Verification requested successfully.', isError: false);
+        setState(() {
+          obs['is_public'] = true;
+          _isPublic = true;
+          obs['under_verification'] = true;
+          obs['verification_result'] = 'PENDING';
+        });
+        _wasModified = true;
+      }
+    } catch (e) {
+      _showToast('Failed to request verification: $e');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _handleCancelVerification() async {
+    final obs = widget.obs;
+    if (obs['under_verification'] != true) {
+      _showToast('Observation is no longer pending verification.');
+      return;
+    }
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Cancel Request?'),
+        content: const Text('Are you sure you want to cancel your request for expert verification?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('No', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Yes, Cancel', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    setState(() => _isLoading = true);
+    try {
+      final id = obs['observation_id'] ?? obs['id'];
+      await Supabase.instance.client
+          .from('observations')
+          .update({
+            'under_verification': false,
+            'verification_result': null,
+          })
+          .eq('observation_id', id);
+
+      if (mounted) {
+        _showToast('Verification request cancelled.', isError: false);
+        setState(() {
+          obs['under_verification'] = false;
+          obs['verification_result'] = null;
+        });
+        _wasModified = true;
+      }
+    } catch (e) {
+      _showToast('Failed to cancel request: $e');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _handleDelete() async {
+    final confirmed = await _showObservationConfirmation(
+      title: 'Delete this observation?',
+      message: 'This action cannot be undone.',
+      confirmLabel: 'Delete',
+      isDestructive: true,
+    );
+    if (!confirmed) return;
+    if (!mounted) return;
+
+    setState(() => _isLoading = true);
+    try {
+      final id = widget.obs['observation_id'] ?? widget.obs['id'];
+      await Supabase.instance.client
+          .from('observations')
+          .update({'is_deleted': true})
+          .eq('observation_id', id);
+      if (mounted) {
+        _showToast('Observation deleted successfully.', isError: false);
+        Navigator.pop(context, true);
+      }
+    } catch (e) {
+      _showToast('Failed to delete: $e');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
   Future<void> _submitVerification() async {
     if (!(_verificationFormKey.currentState?.validate() ?? false)) {
       return;
@@ -316,18 +610,14 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
     final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
     final isPendingVerification = obs['under_verification'] == true;
     
-    final isPublic = obs['is_public'] == true;
-    final isAnonymous = obs['is_anonymous'] == true;
     final isOwner = obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
-    final contributorName = (isPublic && isAnonymous && !isOwner)
-        ? 'Anonymous Scout'
-        : (obs['users'] != null && obs['users'] is Map
-            ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
-            : 'Unknown User');
 
     final rawTimestamp = obs['observation_timestamp'] ?? obs['upload_timestamp'];
     final rawDate = rawTimestamp != null ? DateTime.tryParse(rawTimestamp.toString()) : null;
     final dateStr = rawDate != null ? DateFormat.yMMMd().add_jm().format(rawDate.toLocal()) : 'N/A';
+    final rawUploadStr = obs['upload_timestamp'];
+    final rawUpload = rawUploadStr != null ? DateTime.tryParse(rawUploadStr.toString()) : null;
+    final uploadStr = rawUpload != null ? DateFormat.yMMMd().add_jm().format(rawUpload.toLocal()) : 'Not Uploaded Yet';
     final rawVerificationResult = obs['verification_result']?.toString() ?? 'NONE';
     final verificationResult = rawVerificationResult == 'APPROVED' ? 'Verified' : (rawVerificationResult == 'REJECTED' ? 'Rejected' : rawVerificationResult);
     final verifierName = obs['verifier'] != null && obs['verifier'] is Map 
@@ -337,16 +627,34 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
     final rawVerification = rawVerificationStr != null ? DateTime.tryParse(rawVerificationStr.toString()) : null;
     final verificationStr = rawVerification != null ? DateFormat.yMMMd().add_jm().format(rawVerification.toLocal()) : 'Unknown Date';
     Color verifyColor = isVerified ? (rawVerificationResult == 'APPROVED' ? Colors.blue : Colors.red) : Colors.orange;
+    final canManagePrivacy = _canManageObservationPrivacy(
+      isOwner: isOwner,
+      verificationResult: rawVerificationResult,
+    );
 
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        Navigator.pop(context, _wasModified ? true : null);
+      },
+      child: Scaffold(
       backgroundColor: Colors.grey[50],
       appBar: AppBar(
-        title: const Text('Observation Details', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87)),
+        title: widget.isVerifyMode
+            ? const Text('Verify Observation', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black87))
+            : null,
         backgroundColor: Colors.white,
         elevation: 1,
         iconTheme: const IconThemeData(color: Colors.black87),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => Navigator.pop(context, _wasModified ? true : null),
+        ),
       ),
-      body: Center(
+      body: Stack(
+        children: [
+        Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 1000),
           child: ListView(
@@ -440,25 +748,22 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const Text('Metadata', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                                const Text('Observation Details', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                                 const Divider(height: 24),
-                                _buildDetailRow(
-                                  Icons.person,
-                                  'Observer',
-                                  contributorName,
-                                  trailing: (isAnonymous && isOwner)
-                                      ? Icon(Icons.visibility_off_rounded, size: 14, color: Colors.purple[700])
-                                      : null,
-                                ),
-                                const SizedBox(height: 12),
                                 _buildDetailRow(Icons.calendar_today, 'Observation Timestamp', dateStr),
+                                const SizedBox(height: 12),
+                                _buildDetailRow(Icons.cloud_upload, 'Upload Timestamp', uploadStr),
+                                const SizedBox(height: 12),
+                                _buildDetailRow(Icons.location_on, 'Location', _isLoadingProvince ? 'Loading...' : _province ?? 'Unknown'),
+                                if (widget.currentUserRole == 'EXPERT' && !widget.isVerifyMode) ...[
+                                  const SizedBox(height: 12),
+                                  _buildDetailRow(Icons.devices_outlined, 'Source', obs['source']?.toString().toUpperCase() ?? 'UNKNOWN'),
+                                ],
                                 if (isOwner) ...[
                                   const SizedBox(height: 12),
                                   _buildDetailRow(Icons.explore, 'Coordinates (Lat/Lng)', '$latStr, $lngStr'),
                                 ],
-                                const SizedBox(height: 12),
-                                _buildDetailRow(Icons.location_on, 'Location', _isLoadingProvince ? 'Loading...' : _province ?? 'Unknown'),
-                                if (obs['remarks'] != null && obs['remarks'].toString().isNotEmpty) ...[
+                                if ((isOwner || widget.isVerifyMode) && obs['remarks'] != null && obs['remarks'].toString().isNotEmpty) ...[
                                   const SizedBox(height: 12),
                                   _buildDetailRow(Icons.notes, 'Current Remarks', obs['remarks']),
                                 ],
@@ -468,6 +773,80 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                         ),
 
                         const SizedBox(height: 24),
+
+                        if (canManagePrivacy && !widget.isVerifyMode) ...[
+                          Card(
+                            elevation: 2,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                            child: Padding(
+                              padding: const EdgeInsets.all(20.0),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text('Privacy Settings', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                                  const Divider(height: 24),
+                                  CheckboxListTile(
+                                    controlAffinity: ListTileControlAffinity.trailing,
+                                    contentPadding: EdgeInsets.zero,
+                                    title: const Text('Public Observation', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+                                    subtitle: const Text('Allow others to view this', style: TextStyle(fontSize: 12)),
+                                    value: _isPublic,
+                                    activeColor: Colors.green[700],
+                                    onChanged: (val) {
+                                      final newVal = val ?? false;
+                                      setState(() => _isPublic = newVal);
+                                      _updatePrivacySettings(newVal, _isAnonymous);
+                                    },
+                                  ),
+                                  const Divider(height: 1),
+                                  CheckboxListTile(
+                                    controlAffinity: ListTileControlAffinity.trailing,
+                                    contentPadding: EdgeInsets.zero,
+                                    title: const Text('Submit Anonymously', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+                                    subtitle: const Text('Hide your username', style: TextStyle(fontSize: 12)),
+                                    value: _isAnonymous,
+                                    activeColor: Colors.green[700],
+                                    onChanged: (val) {
+                                      final newVal = val ?? false;
+                                      setState(() => _isAnonymous = newVal);
+                                      _updatePrivacySettings(_isPublic, newVal);
+                                    },
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 24),
+                        ],
+
+                        if (widget.showViewOnMapButton && rawVerificationResult != 'REJECTED') ...[
+                          OutlinedButton.icon(
+                            onPressed: () {
+                              final onViewOnMap = widget.onViewOnMap;
+                              if (onViewOnMap != null) {
+                                // Pop back to the dashboard shell so the sidebar
+                                // stays visible, then switch to the Map tab.
+                                Navigator.of(context).popUntil((route) => route.isFirst);
+                                onViewOnMap(obs);
+                              } else {
+                                Navigator.push(
+                                  context,
+                                  MaterialPageRoute(
+                                    builder: (context) => MapPage(highlightObservation: obs),
+                                  ),
+                                );
+                              }
+                            },
+                            icon: const Icon(Icons.map_outlined),
+                            label: const Text('View on Map'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.green[700],
+                              side: BorderSide(color: Colors.green[700]!),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                        ],
 
                         if (isVerified) ...[
                           Card(
@@ -572,6 +951,46 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                               ),
                             ),
                           ),
+
+                        if (!isVerified && !isPendingVerification && isOwner) ...[
+                          ElevatedButton.icon(
+                            onPressed: _handleRequestVerification,
+                            icon: const Icon(Icons.fact_check),
+                            label: const Text('Request Expert Verification'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.green[700],
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                            ),
+                          ),
+                        ],
+
+                        if (isPendingVerification && isOwner && !widget.isVerifyMode) ...[
+                          OutlinedButton.icon(
+                            onPressed: _handleCancelVerification,
+                            icon: const Icon(Icons.cancel_schedule_send),
+                            label: const Text('Cancel Verification Request'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.orange,
+                              side: const BorderSide(color: Colors.orange),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                            ),
+                          ),
+                        ],
+
+                        if (isOwner && !widget.isVerifyMode) ...[
+                          const SizedBox(height: 4),
+                          OutlinedButton.icon(
+                            onPressed: _handleDelete,
+                            icon: const Icon(Icons.delete_outline),
+                            label: const Text('Delete Observation'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: Colors.red,
+                              side: const BorderSide(color: Colors.red),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                            ),
+                          ),
+                        ],
                       ],
                     ),
                   ),
@@ -580,8 +999,15 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
             ],
           ),
         ),
+        ),
+        if (_isLoading)
+          Container(
+            color: Colors.black.withValues(alpha: 0.3),
+            child: const Center(child: CircularProgressIndicator()),
+          ),
+        ],
       ),
-    );
+    ));
   }
 
   Widget _buildDetailRow(IconData icon, String label, String value, {Widget? trailing}) {
