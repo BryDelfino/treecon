@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
@@ -14,6 +15,7 @@ import 'package:scout_mobile/src/core/services/network_service.dart';
 import 'package:intl/intl.dart';
 import 'package:scout_mobile/src/features/observations/presentation/pages/observation_details_page.dart';
 import 'package:scout_mobile/src/features/observations/presentation/widgets/full_screen_image_viewer.dart';
+import 'package:scout_mobile/src/features/observations/data/observation_local_db.dart';
 
 class MapPage extends StatefulWidget {
   final Map<String, dynamic>? highlightObservation;
@@ -119,7 +121,9 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
   DateTime? _observationEndDate;
   bool _showMyObservationsOnly = false;
   bool _showAnonymousOnly = false;
+  bool _showLocalObservationsOnly = false;
   List<Map<String, dynamic>> _observationsData = [];
+  List<Map<String, dynamic>> _cachedObservationsData = [];
   final List<String> _availableVerificationStatuses = ['All', 'Verified', 'Pending', 'Unverified'];
   final List<String> _availableUserRoles = ['All', 'Expert', 'Community'];
   final List<String> _availableObservationSources = ['All', 'Mobile', 'Web'];
@@ -139,6 +143,7 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
     if (widget.highlightObservation != null) {
       _showObservations = true;
     }
+    _fetchCachedObservations();
     if (NetworkService.instance.isOnline && hasSession) {
       _loadCountryBoundary();
       _fetchDatasets();
@@ -624,9 +629,67 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
     }
   }
 
+  Future<void> _fetchCachedObservations() async {
+    final cached = await ObservationLocalDb.instance.getAllLocal();
+    if (!mounted) return;
+    setState(() {
+      _cachedObservationsData = cached.map((e) {
+        return {
+          'observation_id': e.observationId,
+          'user_id': e.userId,
+          'latitude': e.latitude,
+          'longitude': e.longitude,
+          'observation_timestamp': e.observationTimestamp.toIso8601String(),
+          'image_path': e.imagePath,
+          'source': e.source.toUpperCase(),
+          'is_public': e.isPublic,
+          'is_anonymous': e.isAnonymous,
+        };
+      }).toList();
+    });
+  }
+
+  void _applyHighlightedCachedObservation(Map<String, dynamic> rawObs) {
+    final id = rawObs['observation_id'];
+    final coords = _parseCoordinates(rawObs['coordinates']);
+    final double? lat = rawObs['latitude'] != null ? double.tryParse(rawObs['latitude'].toString()) : coords?['lat'];
+    final double? lng = rawObs['longitude'] != null ? double.tryParse(rawObs['longitude'].toString()) : coords?['lng'];
+    if (lat == null || lng == null) return;
+
+    final obs = {
+      ...rawObs,
+      'latitude': lat,
+      'longitude': lng,
+    };
+
+    final alreadyPresent = _cachedObservationsData.any((o) => o['observation_id'] == id);
+    if (!alreadyPresent) {
+      setState(() {
+        _cachedObservationsData = [..._cachedObservationsData, obs];
+      });
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _mapController.move(LatLng(lat, lng), 17);
+      setState(() {
+        _highlightedLatLng = LatLng(lat, lng);
+      });
+      _highlightPulseController
+        ..reset()
+        ..repeat();
+      _showCachedObservationInfoSheet(obs);
+    });
+  }
+
   Future<void> _applyHighlightedObservation() async {
     final rawObs = widget.highlightObservation;
     if (rawObs == null || !mounted) return;
+
+    if (rawObs['is_local'] == true) {
+      _applyHighlightedCachedObservation(rawObs);
+      return;
+    }
 
     Map<String, dynamic> obs = rawObs;
     final id = rawObs['observation_id'] ?? rawObs['id'];
@@ -816,6 +879,135 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
         ),
       );
     }).toList();
+  }
+
+  List<Marker> _buildCachedObservationMarkers() {
+    return _cachedObservationsData.map((obs) {
+      final lat = (obs['latitude'] as num).toDouble();
+      final lng = (obs['longitude'] as num).toDouble();
+
+      return Marker(
+        point: LatLng(lat, lng),
+        width: 24,
+        height: 24,
+        child: GestureDetector(
+          onTap: () => _showCachedObservationInfoSheet(obs),
+          child: Container(
+            decoration: BoxDecoration(
+              color: Colors.amber[700],
+              shape: BoxShape.rectangle,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(color: Colors.white, width: 2),
+              boxShadow: const [
+                BoxShadow(color: Colors.black26, blurRadius: 4, offset: Offset(0, 2))
+              ],
+            ),
+            child: const Icon(Icons.cloud_off_rounded, size: 14, color: Colors.white),
+          ),
+        ),
+      );
+    }).toList();
+  }
+
+  void _showCachedObservationInfoSheet(Map<String, dynamic> obs) {
+    final lat = (obs['latitude'] as num).toDouble();
+    final lng = (obs['longitude'] as num).toDouble();
+    final province = _getProvinceForObservation(LatLng(lat, lng));
+    final rawTimestamp = obs['observation_timestamp'];
+    final rawDate = rawTimestamp != null ? DateTime.tryParse(rawTimestamp.toString()) : null;
+    final date = rawDate != null ? DateFormat.yMMMd().add_jm().format(rawDate.toLocal()) : 'Unknown Date';
+    final localImagePath = obs['image_path']?.toString();
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24.0)),
+      ),
+      builder: (context) {
+        return SafeArea(
+          child: SingleChildScrollView(
+            child: Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 40,
+                      height: 4,
+                      margin: const EdgeInsets.only(bottom: 16),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[300],
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                  Row(
+                    children: [
+                      Icon(Icons.person_pin_circle, color: Colors.amber[800]),
+                      const SizedBox(width: 8),
+                      const Text("Field Observation", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                    ],
+                  ),
+                  const Divider(height: 20),
+                  if (localImagePath != null && localImagePath.isNotEmpty && File(localImagePath).existsSync()) ...[
+                    GestureDetector(
+                      onTap: () => FullScreenImageViewer.show(context, localImagePath: localImagePath),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: Image.file(File(localImagePath), height: 140, width: double.infinity, fit: BoxFit.cover),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  Row(
+                    children: [
+                      Icon(Icons.cloud_off_rounded, size: 16, color: Colors.amber[800]),
+                      const SizedBox(width: 4),
+                      Text("Locally Cached", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Colors.amber[800])),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text("Observation Timestamp: $date", style: const TextStyle(fontSize: 13)),
+                  Text("Province: $province", style: const TextStyle(fontSize: 13)),
+                  Text("Lat/Lng: ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}", style: const TextStyle(fontSize: 13)),
+                  const SizedBox(height: 16),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      style: FilledButton.styleFrom(backgroundColor: Colors.amber[800]),
+                      onPressed: () {
+                        Navigator.pop(context); // Close bottom sheet
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (context) => ObservationDetailsPage(
+                              obs: obs,
+                              isCached: true,
+                              showViewOnMapButton: false,
+                              currentUserRole: _currentUserRole,
+                            ),
+                          ),
+                        ).then((result) {
+                          if (result != null) {
+                            _fetchCachedObservations();
+                          }
+                        });
+                      },
+                      icon: const Icon(Icons.info_outline),
+                      label: const Text('View Details'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 
   void _showObservationInfoSheet(Map<String, dynamic> obs) {
@@ -1729,10 +1921,10 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
                             items: _availableVerificationStatuses.map((stat) {
                               return DropdownMenuItem(
                                 value: stat,
-                                child: Text(stat, style: const TextStyle(fontSize: 12)),
+                                child: Text(stat, style: TextStyle(fontSize: 12, color: _showLocalObservationsOnly ? Colors.grey : Colors.black87)),
                               );
                             }).toList(),
-                            onChanged: (val) {
+                            onChanged: _showLocalObservationsOnly ? null : (val) {
                               if (val != null) {
                                 setModalState(() => _selectedObservationVerification = val);
                                 setState(() => _selectedObservationVerification = val);
@@ -1751,10 +1943,10 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
                             items: _availableUserRoles.map((role) {
                               return DropdownMenuItem(
                                 value: role,
-                                child: Text(role, style: TextStyle(fontSize: 12, color: (_showMyObservationsOnly || _showAnonymousOnly) ? Colors.grey : Colors.black87)),
+                                child: Text(role, style: TextStyle(fontSize: 12, color: (_showLocalObservationsOnly || _showMyObservationsOnly || _showAnonymousOnly) ? Colors.grey : Colors.black87)),
                               );
                             }).toList(),
-                            onChanged: (_showMyObservationsOnly || _showAnonymousOnly) ? null : (val) {
+                            onChanged: (_showLocalObservationsOnly || _showMyObservationsOnly || _showAnonymousOnly) ? null : (val) {
                               if (val != null) {
                                 setModalState(() => _selectedObservationUserRole = val);
                                 setState(() => _selectedObservationUserRole = val);
@@ -1774,10 +1966,10 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
                               items: _availableObservationSources.map((source) {
                                 return DropdownMenuItem(
                                   value: source,
-                                  child: Text(source, style: TextStyle(fontSize: 12, color: _showAnonymousOnly ? Colors.grey : Colors.black87)),
+                                  child: Text(source, style: TextStyle(fontSize: 12, color: (_showLocalObservationsOnly || _showAnonymousOnly) ? Colors.grey : Colors.black87)),
                                 );
                               }).toList(),
-                              onChanged: _showAnonymousOnly ? null : (val) {
+                              onChanged: (_showLocalObservationsOnly || _showAnonymousOnly) ? null : (val) {
                                 if (val != null) {
                                   setModalState(() => _selectedObservationSource = val);
                                   setState(() => _selectedObservationSource = val);
@@ -1866,9 +2058,9 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
                           CheckboxListTile(
                             controlAffinity: ListTileControlAffinity.trailing,
                             contentPadding: EdgeInsets.zero,
-                            title: const Text("My Observations Only", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            title: Text("My Observations Only", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: _showLocalObservationsOnly ? Colors.grey : Colors.black87)),
                             value: _showMyObservationsOnly,
-                            onChanged: (val) {
+                            onChanged: _showLocalObservationsOnly ? null : (val) {
                               setModalState(() {
                                 _showMyObservationsOnly = val ?? false;
                                 if (val ?? false) _selectedObservationUserRole = 'All';
@@ -1882,9 +2074,9 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
                           CheckboxListTile(
                             controlAffinity: ListTileControlAffinity.trailing,
                             contentPadding: EdgeInsets.zero,
-                            title: const Text("Show Anonymous Observations Only", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            title: Text("Show Anonymous Observations Only", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: _showLocalObservationsOnly ? Colors.grey : Colors.black87)),
                             value: _showAnonymousOnly,
-                            onChanged: (val) {
+                            onChanged: _showLocalObservationsOnly ? null : (val) {
                               setModalState(() {
                                 _showAnonymousOnly = val ?? false;
                                 if (val ?? false) {
@@ -1901,6 +2093,34 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
                               });
                             },
                           ),
+                          CheckboxListTile(
+                            controlAffinity: ListTileControlAffinity.trailing,
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text("Show Local Observations Only", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            value: _showLocalObservationsOnly,
+                            onChanged: (val) {
+                              setModalState(() => _showLocalObservationsOnly = val ?? false);
+                              setState(() => _showLocalObservationsOnly = val ?? false);
+                            },
+                          ),
+                          if (_showLocalObservationsOnly)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4, bottom: 4),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Icon(Icons.info_outline, size: 14, color: Colors.amber[800]),
+                                  const SizedBox(width: 6),
+                                  Expanded(
+                                    child: Text(
+                                      'Local observations are not affected by the filters above. '
+                                      'Their privacy settings only take effect once you sync them, which assigns them to your account.',
+                                      style: TextStyle(fontSize: 11, color: Colors.amber[900]),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                         ],
                       ),
 
@@ -2315,7 +2535,7 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
                           ),
 
                         // Observation markers with clustering
-                        if (_showObservations && _observationsData.isNotEmpty)
+                        if (_showObservations && !_showLocalObservationsOnly && _observationsData.isNotEmpty)
                           MarkerClusterLayerWidget(
                             options: MarkerClusterLayerOptions(
                               maxClusterRadius: 45,
@@ -2336,6 +2556,43 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
                                     child: Text(
                                       markers.length.toString(),
                                       style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+
+                        // Cached (locally stored, not-yet-synced) observation markers,
+                        // shown regardless of connectivity since they never leave the device.
+                        if (_showObservations && _cachedObservationsData.isNotEmpty)
+                          MarkerClusterLayerWidget(
+                            options: MarkerClusterLayerOptions(
+                              maxClusterRadius: 45,
+                              size: const Size(40, 40),
+                              alignment: Alignment.center,
+                              padding: const EdgeInsets.all(50),
+                              maxZoom: 15,
+                              markers: _buildCachedObservationMarkers(),
+                              builder: (context, markers) {
+                                return Container(
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.rectangle,
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: Colors.white, width: 2),
+                                    color: Colors.amber.shade700,
+                                  ),
+                                  child: Center(
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        const Icon(Icons.cloud_off_rounded, size: 12, color: Colors.white),
+                                        const SizedBox(width: 3),
+                                        Text(
+                                          markers.length.toString(),
+                                          style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                        ),
+                                      ],
                                     ),
                                   ),
                                 );
