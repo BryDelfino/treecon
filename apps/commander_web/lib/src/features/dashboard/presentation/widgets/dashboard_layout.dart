@@ -17,6 +17,19 @@ class _DashboardLayoutState extends State<DashboardLayout> {
   Map<String, dynamic>? _profile;
   int _pendingCount = 0;
   RealtimeChannel? _queueSubscription;
+  Map<String, dynamic>? _mapHighlightObservation;
+  int _mapHighlightNonce = 0;
+
+  /// Switches to the Spatial Map tab (keeping the sidebar/shell visible)
+  /// and highlights the given observation, instead of pushing a full-screen
+  /// route that would hide the dashboard navigation.
+  void _navigateToMapWithHighlight(Map<String, dynamic> obs) {
+    setState(() {
+      _selectedIndex = 2;
+      _mapHighlightObservation = obs;
+      _mapHighlightNonce++;
+    });
+  }
 
   @override
   void initState() {
@@ -101,11 +114,14 @@ class _DashboardLayoutState extends State<DashboardLayout> {
   Widget _getSelectedPage() {
     switch (_selectedIndex) {
       case 0:
-        return const ObservationsListPage(isExpertOnly: true);
+        return ObservationsListPage(isExpertOnly: true, onViewOnMap: _navigateToMapWithHighlight);
       case 1:
-        return const ObservationsListPage(isExpertOnly: false);
+        return ObservationsListPage(isExpertOnly: false, onViewOnMap: _navigateToMapWithHighlight);
       case 2:
-        return const MapPage();
+        return MapPage(
+          key: ValueKey('map_$_mapHighlightNonce'),
+          highlightObservation: _mapHighlightObservation,
+        );
       case 3:
         return const ProfilePage();
       default:
@@ -278,6 +294,9 @@ class _DashboardLayoutState extends State<DashboardLayout> {
           onTap: () {
             setState(() {
               _selectedIndex = index;
+              // Manually switching tabs (rather than "View on Map") should
+              // land on the plain map, not re-apply a stale highlight.
+              _mapHighlightObservation = null;
             });
           },
           borderRadius: BorderRadius.circular(10),
