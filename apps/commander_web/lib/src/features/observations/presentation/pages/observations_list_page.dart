@@ -930,38 +930,40 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                                     style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: verifyTextCol, letterSpacing: 0.5),
                                   ),
                                 ),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                  decoration: BoxDecoration(
-                                    color: isPublic ? Colors.teal[50] : Colors.grey[100],
-                                    borderRadius: BorderRadius.circular(6),
-                                    border: Border.all(color: isPublic ? Colors.teal[200]! : Colors.grey[300]!),
-                                  ),
-                                  child: Text(
-                                    isPublic ? 'PUBLIC' : 'PRIVATE',
-                                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: isPublic ? Colors.teal[700] : Colors.grey[600], letterSpacing: 0.5),
-                                  ),
-                                ),
-                                if (isAnonymous)
+                                if (obs['verification_result'] != 'REJECTED') ...[
                                   Container(
                                     padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                                     decoration: BoxDecoration(
-                                      color: Colors.purple[50],
+                                      color: isPublic ? Colors.teal[50] : Colors.grey[100],
                                       borderRadius: BorderRadius.circular(6),
-                                      border: Border.all(color: Colors.purple[200]!),
+                                      border: Border.all(color: isPublic ? Colors.teal[200]! : Colors.grey[300]!),
                                     ),
-                                    child: Row(
-                                      mainAxisSize: MainAxisSize.min,
-                                      children: [
-                                        Icon(Icons.visibility_off_rounded, size: 11, color: Colors.purple[700]),
-                                        const SizedBox(width: 4),
-                                        Text(
-                                          'ANONYMOUS',
-                                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Colors.purple[700], letterSpacing: 0.5),
-                                        ),
-                                      ],
+                                    child: Text(
+                                      isPublic ? 'PUBLIC' : 'PRIVATE',
+                                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: isPublic ? Colors.teal[700] : Colors.grey[600], letterSpacing: 0.5),
                                     ),
                                   ),
+                                  if (isAnonymous)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                      decoration: BoxDecoration(
+                                        color: Colors.purple[50],
+                                        borderRadius: BorderRadius.circular(6),
+                                        border: Border.all(color: Colors.purple[200]!),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(Icons.visibility_off_rounded, size: 11, color: Colors.purple[700]),
+                                          const SizedBox(width: 4),
+                                          Text(
+                                            'ANONYMOUS',
+                                            style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Colors.purple[700], letterSpacing: 0.5),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                ],
                               ] else if (isVerified)
                                 Container(
                                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
