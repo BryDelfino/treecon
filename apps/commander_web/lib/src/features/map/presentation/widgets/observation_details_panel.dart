@@ -3,16 +3,20 @@ import 'package:flutter/material.dart';
 import 'package:shared_services/shared_services.dart';
 import 'package:intl/intl.dart';
 import 'dart:typed_data';
+import '../../../observations/presentation/widgets/full_screen_image_viewer.dart';
+import '../../../observations/presentation/pages/observation_details_page.dart';
 class ObservationDetailsPanel extends StatefulWidget {
   final Map<String, dynamic> obs;
   final VoidCallback onClose;
-  final Future<void> Function() onDelete;
+  final VoidCallback onModified;
+  final String? currentUserRole;
 
   const ObservationDetailsPanel({
     super.key,
     required this.obs,
     required this.onClose,
-    required this.onDelete,
+    required this.onModified,
+    this.currentUserRole,
   });
 
   @override
@@ -20,7 +24,6 @@ class ObservationDetailsPanel extends StatefulWidget {
 }
 
 class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
-  bool _isDeleting = false;
   String? _province;
   bool _isLoadingProvince = true;
 
@@ -106,15 +109,6 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
     return {'lat': lat, 'lng': lng};
   }
 
-  Future<void> _handleDelete() async {
-    setState(() => _isDeleting = true);
-    try {
-      await widget.onDelete();
-    } finally {
-      if (mounted) setState(() => _isDeleting = false);
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final isOwner = Supabase.instance.client.auth.currentUser?.id == widget.obs['user_id'];
@@ -158,6 +152,10 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
     }
     
     final isAnonymous = widget.obs['is_anonymous'] == true;
+    final ownerRole = widget.obs['users'] != null && widget.obs['users'] is Map
+        ? (widget.obs['users'] as Map)['role']?.toString().toUpperCase()
+        : null;
+    final isExpert = ownerRole == 'EXPERT';
     final contributorName = (isPublic && isAnonymous && !isOwner)
         ? 'Anonymous Scout'
         : (widget.obs['users'] != null && widget.obs['users'] is Map
@@ -214,15 +212,21 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
                   if (imageUrl != null && imageUrl.isNotEmpty) ...[
                     ClipRRect(
                       borderRadius: BorderRadius.circular(12),
-                      child: Image.network(
-                        imageUrl,
-                        height: 250,
-                        width: double.infinity,
-                        fit: BoxFit.cover,
-                        errorBuilder: (context, error, stackTrace) => Container(
-                          height: 250,
-                          color: Colors.grey[100],
-                          child: const Center(child: Icon(Icons.broken_image, size: 64, color: Colors.grey)),
+                      child: MouseRegion(
+                        cursor: SystemMouseCursors.click,
+                        child: GestureDetector(
+                          onTap: () => FullScreenImageViewer.show(context, imageUrl),
+                          child: Image.network(
+                            imageUrl,
+                            height: 250,
+                            width: double.infinity,
+                            fit: BoxFit.cover,
+                            errorBuilder: (context, error, stackTrace) => Container(
+                              height: 250,
+                              color: Colors.grey[100],
+                              child: const Center(child: Icon(Icons.broken_image, size: 64, color: Colors.grey)),
+                            ),
+                          ),
                         ),
                       ),
                     ),
@@ -243,11 +247,27 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
                     Icons.person,
                     'Observer',
                     contributorName,
-                    trailing: (isAnonymous && isOwner)
-                        ? Icon(Icons.visibility_off_rounded, size: 14, color: Colors.purple[700])
+                    trailing: (isAnonymous && isOwner) || (isExpert && (!isAnonymous || isOwner))
+                        ? Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (isAnonymous && isOwner) ...[
+                                Icon(Icons.visibility_off_rounded, size: 14, color: Colors.purple[700]),
+                                if (isExpert) const SizedBox(width: 4),
+                              ],
+                              if (isExpert && (!isAnonymous || isOwner))
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                  decoration: BoxDecoration(color: Colors.blue.shade100, borderRadius: BorderRadius.circular(4)),
+                                  child: Text('EXPERT', style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.blue.shade900)),
+                                ),
+                            ],
+                          )
                         : null,
                   ),
                   _buildMetaRow(Icons.calendar_today, 'Observation Timestamp', dateStr),
+                  if (widget.currentUserRole == 'EXPERT' && isExpert && (widget.obs['is_anonymous'] != true || isOwner))
+                    _buildMetaRow(Icons.devices_outlined, 'Source', widget.obs['source']?.toString().toUpperCase() ?? 'UNKNOWN'),
                   _buildMetaRow(Icons.map, 'Province', _isLoadingProvince ? 'Loading...' : (_province ?? 'Unknown')),
                   if (isOwner)
                     _buildMetaRow(Icons.location_on, 'Coordinates (Lat/Lng)', '$latStr, $lngStr'),
@@ -263,7 +283,7 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
                     _buildMetaRow(Icons.access_time, 'Verification Timestamp', verificationStr),
                   ],
                   
-                  if (widget.obs['remarks'] != null && widget.obs['remarks'].toString().isNotEmpty)
+                  if (isVerified && widget.obs['remarks'] != null && widget.obs['remarks'].toString().isNotEmpty)
                     Container(
                       margin: const EdgeInsets.only(top: 16),
                       padding: const EdgeInsets.all(12),
@@ -280,27 +300,73 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
                 ],
               ),
             ),
-            const Divider(height: 1),
-            // Actions
-            if (isOwner)
+            if (isOwner || underVerification) ...[
+              const Divider(height: 1),
+              // Actions
               Padding(
                 padding: const EdgeInsets.all(16.0),
-                child: _isDeleting
-                    ? const Center(child: CircularProgressIndicator())
-                    : SizedBox(
+                child: Column(
+                  children: [
+                    if (isOwner) ...[
+                      SizedBox(
                         width: double.infinity,
                         child: OutlinedButton.icon(
-                          onPressed: _handleDelete,
-                          icon: const Icon(Icons.delete_outline),
-                          label: const Text('Delete Observation'),
+                          onPressed: () {
+                            widget.onClose();
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => ObservationDetailsPage(
+                                  obs: widget.obs,
+                                  isVerifyMode: false,
+                                  showViewOnMapButton: false,
+                                  currentUserRole: widget.currentUserRole,
+                                ),
+                              ),
+                            ).then((_) => widget.onModified());
+                          },
+                          icon: const Icon(Icons.info_outline),
+                          label: const Text('View Details'),
                           style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.red,
-                            side: const BorderSide(color: Colors.red),
+                            foregroundColor: Colors.green[700],
+                            side: BorderSide(color: Colors.green[700]!),
                             padding: const EdgeInsets.symmetric(vertical: 16),
                           ),
                         ),
                       ),
+                    ],
+                    if (isOwner && underVerification) const SizedBox(height: 12),
+                    if (underVerification) ...[
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton.icon(
+                          onPressed: () {
+                            widget.onClose();
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) => ObservationDetailsPage(
+                                  obs: widget.obs,
+                                  isVerifyMode: true,
+                                  showViewOnMapButton: false,
+                                  currentUserRole: widget.currentUserRole,
+                                ),
+                              ),
+                            ).then((_) => widget.onModified());
+                          },
+                          icon: const Icon(Icons.fact_check_outlined),
+                          label: const Text('Verify Observation'),
+                          style: FilledButton.styleFrom(
+                            backgroundColor: Colors.purple[700],
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
               ),
+            ],
           ],
         ),
       ),
