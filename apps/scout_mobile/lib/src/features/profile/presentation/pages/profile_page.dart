@@ -385,6 +385,7 @@ class _ProfilePageState extends State<ProfilePage> {
   Widget _buildOnlineProfileView() {
     final userName = _profile?['user_name'] ?? 'User';
     final email = _profile?['email'] ?? Supabase.instance.client.auth.currentUser?.email ?? 'N/A';
+    final isExpert = _profile?['role']?.toString().toUpperCase() == 'EXPERT';
     final avatarUrl = _profile?['avatar_url'] as String?;
     final defaultAvatar = 'https://ui-avatars.com/api/?name=${Uri.encodeComponent(userName)}&background=4CAF50&color=FFFFFF&size=128';
     final displayAvatar = avatarUrl != null && avatarUrl.isNotEmpty ? avatarUrl : defaultAvatar;
@@ -464,6 +465,30 @@ class _ProfilePageState extends State<ProfilePage> {
                 style: TextStyle(color: Colors.grey[600], fontSize: 14),
               ),
             ),
+            if (isExpert) ...[
+              const SizedBox(height: 8.0),
+              Center(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 4.0),
+                  decoration: BoxDecoration(
+                    color: Colors.blue[50],
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: Colors.blue[200]!),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.verified, size: 14, color: Colors.blue[800]),
+                      const SizedBox(width: 4.0),
+                      Text(
+                        'EXPERT',
+                        style: TextStyle(color: Colors.blue[800], fontSize: 11, fontWeight: FontWeight.bold, letterSpacing: 0.5),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
             if (isGoogleUser) ...[
               const SizedBox(height: 20.0),
               Container(
