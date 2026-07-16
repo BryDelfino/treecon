@@ -59,6 +59,7 @@ dependencies:
   flutter_map_marker_cluster: ^8.2.2
   supabase_flutter: ^2.16.0
   intl: ^0.20.3
+  flutter_dotenv: ^5.2.1
 dev_dependencies:
   flutter_test:
     sdk: flutter

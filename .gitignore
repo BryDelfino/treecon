@@ -50,4 +50,4 @@ local.properties
 # Local/Private configuration
 .env
 .env.*
-! .env.example
+!.env.example

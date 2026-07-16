@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_marker_cluster/flutter_map_marker_cluster.dart';
 import 'package:latlong2/latlong.dart';
@@ -12,10 +13,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../widgets/observation_details_panel.dart';
 
-const String apiBaseUrl = String.fromEnvironment(
-  'PYTHON_API_URL',
-  defaultValue: 'http://127.0.0.1:8000',
-);
+String get apiBaseUrl => dotenv.env['PYTHON_API_URL'] ?? 'http://127.0.0.1:8000';
 
 class MapPage extends StatefulWidget {
   final Map<String, dynamic>? highlightObservation;

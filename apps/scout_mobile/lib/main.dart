@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:shared_services/shared_services.dart';
 import 'package:scout_mobile/src/app.dart';
 import 'package:scout_mobile/src/core/services/network_service.dart';
@@ -7,15 +8,17 @@ import 'package:scout_mobile/src/features/observations/data/observation_local_db
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
 
+  await dotenv.load(fileName: '.env');
+
   await Supabase.initialize(
-    url: const String.fromEnvironment('SUPABASE_URL'),
-    publishableKey: const String.fromEnvironment('SUPABASE_PUBLISHABLE_KEY'),
+    url: dotenv.env['SUPABASE_URL'] ?? '',
+    publishableKey: dotenv.env['SUPABASE_PUBLISHABLE_KEY'] ?? '',
   );
 
   // Initialize NetworkService & local database wrapper

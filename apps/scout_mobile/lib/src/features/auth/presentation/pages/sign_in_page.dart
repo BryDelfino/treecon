@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:core/core.dart';
 import 'package:shared_services/shared_services.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -223,7 +224,7 @@ class _SignInPageState extends State<SignInPage> {
     try {
       // Initialize GoogleSignIn
       final GoogleSignIn googleSignIn = GoogleSignIn.instance;
-      const clientId = String.fromEnvironment('GOOGLE_WEB_CLIENT_ID');
+      final clientId = dotenv.env['GOOGLE_WEB_CLIENT_ID'] ?? '';
       debugPrint('Initializing GoogleSignIn with serverClientId: "$clientId"');
       await googleSignIn.initialize(
         serverClientId: clientId.isEmpty ? null : clientId,

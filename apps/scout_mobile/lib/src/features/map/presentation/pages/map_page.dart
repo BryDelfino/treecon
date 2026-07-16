@@ -6,6 +6,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show SystemNavigator;
 import 'package:flutter/foundation.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_map_marker_cluster/flutter_map_marker_cluster.dart';
 import 'package:latlong2/latlong.dart';
@@ -183,7 +184,7 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
   }
 
   String get _apiBaseUrl {
-    const envUrl = String.fromEnvironment('PYTHON_API_URL');
+    final envUrl = dotenv.env['PYTHON_API_URL'] ?? '';
     if (envUrl.isNotEmpty) return envUrl;
     
     // Wi-Fi interface IP address of the host machine
