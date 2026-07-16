@@ -2,14 +2,19 @@ import 'package:flutter/material.dart';
 import 'dart:typed_data';
 import 'package:intl/intl.dart';
 import 'package:shared_services/shared_services.dart';
+import 'add_observation_page.dart';
 import 'observation_details_page.dart';
 
 class ObservationsListPage extends StatefulWidget {
   final bool isExpertOnly;
+  /// When set, "View on Map" switches to the dashboard's Spatial Map tab
+  /// and highlights the observation instead of pushing a full-screen route.
+  final void Function(Map<String, dynamic> obs)? onViewOnMap;
 
   const ObservationsListPage({
     super.key,
     required this.isExpertOnly,
+    this.onViewOnMap,
   });
 
   @override
@@ -26,8 +31,10 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
   DateTime? _filterStartDate;
   DateTime? _filterEndDate;
   String _filterProvince = 'All';
+  String _filterSource = 'All'; // All, Mobile, Web
   bool _filterAnonymousOnly = false;
   bool _sortAscending = false;
+  String? _currentUserRole;
 
   // "My Observations" (isExpertOnly) filters only — not applicable to the
   // verify queue, where every row is always under_verification/PENDING.
@@ -35,7 +42,7 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
   String _filterVerificationStatus = 'All'; // All, Pending, Approved, Rejected
   String _filterVisibility = 'All'; // All, Public, Private
   
-  final int _pageSize = 21;
+  final int _pageSize = 30;
   int _currentPage = 0;
   int _totalCount = 0;
   int get _totalPages {
@@ -46,11 +53,29 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
   @override
   void initState() {
     super.initState();
+    _fetchCurrentUserRole();
     _fetchObservations(resetPage: true);
     _setupRealtime();
     ProvinceLookup.load().then((_) {
       if (mounted) setState(() {});
     });
+  }
+
+  Future<void> _fetchCurrentUserRole() async {
+    try {
+      final user = Supabase.instance.client.auth.currentUser;
+      if (user == null) return;
+      final profile = await Supabase.instance.client
+          .from('users')
+          .select('role')
+          .eq('user_id', user.id)
+          .maybeSingle();
+      if (mounted && profile != null) {
+        setState(() {
+          _currentUserRole = profile['role']?.toString().toUpperCase();
+        });
+      }
+    } catch (_) {}
   }
 
   void _setupRealtime() async {
@@ -250,6 +275,10 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
         query = query.eq('is_anonymous', true);
       }
 
+      if (_currentUserRole == 'EXPERT' && widget.isExpertOnly && _filterSource != 'All') {
+        query = query.eq('source', _filterSource.toUpperCase());
+      }
+
       final response = await query
           .order('observation_timestamp', ascending: _sortAscending)
           .range(_currentPage * _pageSize, ((_currentPage + 1) * _pageSize) - 1)
@@ -355,6 +384,7 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
     String tempVerificationState = _filterVerificationState;
     String tempVerificationStatus = _filterVerificationStatus;
     String tempVisibility = _filterVisibility;
+    String tempSource = _filterSource;
 
     showDialog(
       context: context,
@@ -438,6 +468,26 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                       ),
                       const SizedBox(height: 20),
                     ],
+                    if (_currentUserRole == 'EXPERT' && widget.isExpertOnly) ...[
+                      const Text('Source', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                      const SizedBox(height: 8),
+                      DropdownButtonFormField<String>(
+                        initialValue: tempSource,
+                        decoration: InputDecoration(
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        ),
+                        items: const [
+                          DropdownMenuItem(value: 'All', child: Text('All')),
+                          DropdownMenuItem(value: 'Mobile', child: Text('Mobile')),
+                          DropdownMenuItem(value: 'Web', child: Text('Web')),
+                        ],
+                        onChanged: (value) {
+                          if (value != null) setModalState(() => tempSource = value);
+                        },
+                      ),
+                      const SizedBox(height: 20),
+                    ],
                     const Text('Province', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
                     const SizedBox(height: 8),
                     InputDecorator(
@@ -496,14 +546,14 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: Colors.grey.shade300),
                       ),
-                      child: SwitchListTile(
+                      child: CheckboxListTile(
+                        controlAffinity: ListTileControlAffinity.trailing,
                         title: const Text('Anonymous Only', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                         subtitle: const Text('Show only observations submitted anonymously', style: TextStyle(fontSize: 11)),
                         value: tempAnonymousOnly,
-                        activeTrackColor: Colors.green.shade200,
-                        activeThumbColor: Colors.green.shade700,
+                        activeColor: Colors.green.shade700,
                         onChanged: (val) {
-                          setModalState(() => tempAnonymousOnly = val);
+                          setModalState(() => tempAnonymousOnly = val ?? false);
                         },
                       ),
                     ),
@@ -517,6 +567,7 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                       _filterStartDate = null;
                       _filterEndDate = null;
                       _filterProvince = 'All';
+                      _filterSource = 'All';
                       _filterAnonymousOnly = false;
                       _filterVerificationState = 'All';
                       _filterVerificationStatus = 'All';
@@ -533,6 +584,7 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                       _filterStartDate = tempStart;
                       _filterEndDate = tempEnd;
                       _filterProvince = tempProvince;
+                      _filterSource = tempSource;
                       _filterAnonymousOnly = tempAnonymousOnly;
                       _filterVerificationState = tempVerificationState;
                       _filterVerificationStatus = tempVerificationStatus;
@@ -555,48 +607,19 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
     );
   }
 
-  void _showAddObservationPlaceholder() {
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-          title: Row(
-            children: [
-              Icon(Icons.add_photo_alternate_outlined, color: Colors.green[700]),
-              const SizedBox(width: 10),
-              const Text('Add Observation'),
-            ],
-          ),
-          content: const Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'This is a placeholder for adding new Falcata tree observations.',
-                style: TextStyle(fontSize: 14, color: Colors.black87),
-              ),
-              SizedBox(height: 12),
-              Text(
-                'In the final release, this will allow experts to upload field photographs, specify coordinates, and classify the gall rust severity manually or automatically.',
-                style: TextStyle(fontSize: 13, color: Colors.grey),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: Text('Close', style: TextStyle(color: Colors.green[700], fontWeight: FontWeight.bold)),
-            ),
-          ],
-        );
-      },
+  Future<void> _openAddObservationPage() async {
+    final result = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (context) => const AddObservationPage()),
     );
+    if (result == true) {
+      _fetchObservations(resetPage: true);
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final title = widget.isExpertOnly ? "My Observations" : "All System Observations";
+    final title = widget.isExpertOnly ? "My Observations" : "Verify Observations";
 
     return Scaffold(
       backgroundColor: Colors.grey[50],
@@ -641,7 +664,7 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                     borderRadius: BorderRadius.circular(8),
                   ),
                 ),
-                onPressed: _showAddObservationPlaceholder,
+                onPressed: _openAddObservationPage,
                 icon: const Icon(Icons.add, size: 18),
                 label: const Text('Add Observation', style: TextStyle(fontWeight: FontWeight.bold)),
               ),
@@ -736,9 +759,9 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                 padding: const EdgeInsets.all(24.0),
                 gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
                   crossAxisCount: crossAxisCount,
-                  crossAxisSpacing: 20,
-                  mainAxisSpacing: 20,
-                  mainAxisExtent: 180,
+                  crossAxisSpacing: 16,
+                  mainAxisSpacing: 16,
+                  mainAxisExtent: 150,
                 ),
                 itemCount: _observations.length,
                 itemBuilder: (context, index) {
@@ -746,12 +769,10 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
             final rawTimestamp = obs['observation_timestamp'] ?? obs['upload_timestamp'];
             final rawDate = rawTimestamp != null ? DateTime.tryParse(rawTimestamp.toString()) : null;
             final dateStr = rawDate != null ? DateFormat.yMMMd().add_jm().format(rawDate.toLocal()) : 'N/A';
-            final coords = _parseCoordinates(obs['coordinates']);
-            final latStr = coords != null ? coords['lat']!.toStringAsFixed(6) : 'N/A';
-            final lngStr = coords != null ? coords['lng']!.toStringAsFixed(6) : 'N/A';
             final source = obs['source']?.toString().toUpperCase() ?? 'UPLOAD';
             final imageUrl = obs['image_url']?.toString();
             final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
+            final isPending = obs['under_verification'] == true && obs['verification_result'] == 'PENDING';
             final isPublic = obs['is_public'] == true;
             final isAnonymous = obs['is_anonymous'] == true;
             final isOwner = obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
@@ -760,6 +781,23 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                 : (obs['users'] != null && obs['users'] is Map
                     ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
                     : 'Unknown User');
+
+            String verifyText = 'UNVERIFIED';
+            Color verifyBg = Colors.grey[100]!;
+            Color verifyTextCol = Colors.grey[700]!;
+            if (obs['verification_result'] == 'APPROVED') {
+              verifyText = 'APPROVED';
+              verifyBg = Colors.green[50]!;
+              verifyTextCol = Colors.green[800]!;
+            } else if (obs['verification_result'] == 'REJECTED') {
+              verifyText = 'REJECTED';
+              verifyBg = Colors.red[50]!;
+              verifyTextCol = Colors.red[800]!;
+            } else if (isPending) {
+              verifyText = 'PENDING';
+              verifyBg = Colors.purple[50]!;
+              verifyTextCol = Colors.purple[800]!;
+            }
 
             return Card(
               elevation: 2,
@@ -777,6 +815,9 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                       builder: (context) => ObservationDetailsPage(
                         obs: obs,
                         isVerifyMode: !widget.isExpertOnly,
+                        showViewOnMapButton: widget.isExpertOnly,
+                        currentUserRole: _currentUserRole,
+                        onViewOnMap: widget.onViewOnMap,
                       ),
                     ),
                   ).then((value) {
@@ -820,8 +861,9 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                   // Details
                   Expanded(
                     child: Padding(
-                      padding: const EdgeInsets.all(16.0),
+                      padding: const EdgeInsets.all(12.0),
                       child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
@@ -830,105 +872,132 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                           ),
-                          const Spacer(),
-                          if (isOwner) ...[
+                          const SizedBox(height: 4.0),
+                          if (!widget.isExpertOnly) ...[
                             Row(
                               children: [
-                                Icon(Icons.location_on_outlined, size: 14, color: Colors.green[700]),
+                                Icon(Icons.person_outline, size: 14, color: Colors.grey[600]),
                                 const SizedBox(width: 4.0),
                                 Expanded(
                                   child: Text(
-                                    'Lat: $latStr, Lng: $lngStr',
-                                    style: const TextStyle(
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w500,
-                                      color: Colors.black87,
-                                    ),
+                                    'By: $contributorName',
+                                    style: TextStyle(fontSize: 11, color: Colors.grey[600]),
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                   ),
                                 ),
+                                if (isAnonymous && isOwner) ...[
+                                  const SizedBox(width: 4.0),
+                                  Icon(Icons.visibility_off_rounded, size: 12, color: Colors.purple[700]),
+                                ],
                               ],
                             ),
                             const SizedBox(height: 4.0),
                           ],
-                          Row(
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 4,
                             children: [
-                              Icon(Icons.person_outline, size: 14, color: Colors.grey[600]),
-                              const SizedBox(width: 4.0),
-                              Expanded(
-                                child: Text(
-                                  'By: $contributorName',
-                                  style: TextStyle(fontSize: 11, color: Colors.grey[600]),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
+                              if (widget.isExpertOnly) ...[
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: Colors.blue[50],
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: Colors.blue[200]!),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.camera_alt_outlined, size: 11, color: Colors.blue[700]),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        source,
+                                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Colors.blue[700], letterSpacing: 0.5),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                              ),
-                              if (isAnonymous && isOwner) ...[
-                                const SizedBox(width: 4.0),
-                                Icon(Icons.visibility_off_rounded, size: 12, color: Colors.purple[700]),
-                              ],
-                            ],
-                          ),
-                          const SizedBox(height: 4.0),
-                          Row(
-                            children: [
-                              Icon(Icons.camera_alt_outlined, size: 14, color: Colors.grey[600]),
-                              const SizedBox(width: 4.0),
-                              Text(
-                                'Source: $source',
-                                style: TextStyle(fontSize: 11, color: Colors.grey[600]),
-                              ),
-                            ],
-                          ),
-                          const Spacer(),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              if (isVerified)
-                                const Row(
-                                  children: [
-                                    Icon(Icons.verified_rounded, color: Colors.blue, size: 16),
-                                    SizedBox(width: 4),
-                                    Text(
-                                      'Verified',
-                                      style: TextStyle(
-                                        color: Colors.blue,
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.bold,
-                                      ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: verifyBg,
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: verifyTextCol.withValues(alpha: 0.3)),
+                                  ),
+                                  child: Text(
+                                    verifyText,
+                                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: verifyTextCol, letterSpacing: 0.5),
+                                  ),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: isPublic ? Colors.teal[50] : Colors.grey[100],
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: isPublic ? Colors.teal[200]! : Colors.grey[300]!),
+                                  ),
+                                  child: Text(
+                                    isPublic ? 'PUBLIC' : 'PRIVATE',
+                                    style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: isPublic ? Colors.teal[700] : Colors.grey[600], letterSpacing: 0.5),
+                                  ),
+                                ),
+                                if (isAnonymous)
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                    decoration: BoxDecoration(
+                                      color: Colors.purple[50],
+                                      borderRadius: BorderRadius.circular(6),
+                                      border: Border.all(color: Colors.purple[200]!),
                                     ),
-                                  ],
-                                )
-                              else if (!widget.isExpertOnly)
-                                const Row(
-                                  children: [
-                                    Icon(Icons.pending_actions_outlined, color: Colors.orange, size: 16),
-                                    SizedBox(width: 4),
-                                    Text(
-                                      'Needs Verification',
-                                      style: TextStyle(
-                                        color: Colors.orange,
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w500,
-                                      ),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.visibility_off_rounded, size: 11, color: Colors.purple[700]),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          'ANONYMOUS',
+                                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: Colors.purple[700], letterSpacing: 0.5),
+                                        ),
+                                      ],
                                     ),
-                                  ],
+                                  ),
+                              ] else if (isVerified)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: Colors.blue[50],
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: Colors.blue[200]!),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.verified_rounded, color: Colors.blue, size: 12),
+                                      const SizedBox(width: 4),
+                                      Text('VERIFIED', style: TextStyle(color: Colors.blue[800], fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
+                                    ],
+                                  ),
                                 )
                               else
-                                const Row(
-                                  children: [
-                                    Icon(Icons.pending_actions_outlined, color: Colors.orange, size: 16),
-                                    SizedBox(width: 4),
-                                    Text(
-                                      'Unverified',
-                                      style: TextStyle(
-                                        color: Colors.orange,
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w500,
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: Colors.orange[50],
+                                    borderRadius: BorderRadius.circular(6),
+                                    border: Border.all(color: Colors.orange[200]!),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.pending_actions_outlined, color: Colors.orange[800], size: 12),
+                                      const SizedBox(width: 4),
+                                      Text(
+                                        (isPending ? 'PENDING' : 'NEEDS VERIFICATION'),
+                                        style: TextStyle(color: Colors.orange[800], fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 0.5),
                                       ),
-                                    ),
-                                  ],
+                                    ],
+                                  ),
                                 ),
                             ],
                           ),
