@@ -18,20 +18,33 @@ const String apiBaseUrl = String.fromEnvironment(
 );
 
 class MapPage extends StatefulWidget {
-  const MapPage({super.key});
+  final Map<String, dynamic>? highlightObservation;
+
+  const MapPage({super.key, this.highlightObservation});
 
   @override
   State<MapPage> createState() => _MapPageState();
 }
 
-class _MapPageState extends State<MapPage> {
+class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
   final _hitNotifier = ValueNotifier<LayerHitResult<Object>?>(null);
   final _mapController = MapController();
+  late final AnimationController _highlightPulseController;
+  LatLng? _highlightedLatLng;
 
   List<Polygon> _caPolygons = [];
   List<Polygon> _krigingPolygons = [];
+  // Per-plantation-point forecast values (own coordinates, not province
+  // centroid), keyed by lat/lng. Used for plantation marker severity instead
+  // of the coarser province-level _caPolygons lookup.
+  List<Map<String, dynamic>> _caPointForecasts = [];
   bool _isCaLoading = false;
   bool _isKrigingLoading = false;
+  // Incremented on every _fetchForecast/_fetchKriging call; used to discard
+  // responses from superseded requests that resolve out of order (e.g. a
+  // lower-step forecast request that finishes after a later, higher-step one).
+  int _forecastRequestId = 0;
+  int _krigingRequestId = 0;
 
   // Simulation layers state
   bool _showCA = false;
@@ -47,20 +60,23 @@ class _MapPageState extends State<MapPage> {
   String _selectedObservationVerification = 'All';
   String _selectedObservationUserRole = 'All';
   String _selectedObservationProvince = 'All';
+  String _selectedObservationSource = 'All';
   DateTime? _observationStartDate;
   DateTime? _observationEndDate;
   bool _showMyObservationsOnly = false;
-  bool _hideAnonymousObservations = false;
+  bool _showAnonymousOnly = false;
 
-  final List<String> _availableVerificationStatuses = ['All', 'Verified', 'Unverified'];
+  final List<String> _availableVerificationStatuses = ['All', 'Verified', 'Pending', 'Unverified'];
   final List<String> _availableUserRoles = ['All', 'Expert', 'Community'];
+  final List<String> _availableObservationSources = ['All', 'Mobile', 'Web'];
   bool _showObservations = true;
   bool _isObservationsExpanded = false;
   bool _isObservationsLoading = false;
   bool _isControlsCollapsed = false;
   List<Map<String, dynamic>> _observationsData = [];
   Map<String, dynamic>? _selectedObservation;
-  
+  String? _currentUserRole;
+
   // Plantations state
   bool _showPlantations = false;
   bool _isPlantationsLoading = false;
@@ -224,13 +240,21 @@ class _MapPageState extends State<MapPage> {
   }
 
   double? _getCAForecastForPoint(LatLng point) {
-    if (!_showCA || _caPolygons.isEmpty) return null;
-    for (var poly in _caPolygons) {
-      if (_isPointInPolygon(point, poly.points)) {
-        final props = poly.hitValue as Map<String, dynamic>?;
-        if (props != null) {
-          return double.tryParse(props['severity_value']?.toString() ?? '');
-        }
+    if (!_showCA || _caPointForecasts.isEmpty) return null;
+    // Matches by proximity rather than exact equality, since floating point
+    // values pass through CSV parsing, the backend, and JSON round-trips.
+    // The backend now returns one forecast entry per exact plantation
+    // coordinate (not grid-snapped), so this only needs to tolerate
+    // floating-point round-trip noise -- not spatial proximity. A looser
+    // epsilon here would risk matching a marker to a *different* nearby
+    // plantation point's forecast.
+    const epsilon = 0.000001; // ~11cm
+    for (final pf in _caPointForecasts) {
+      final lat = (pf['latitude'] as num?)?.toDouble();
+      final lng = (pf['longitude'] as num?)?.toDouble();
+      if (lat == null || lng == null) continue;
+      if ((lat - point.latitude).abs() < epsilon && (lng - point.longitude).abs() < epsilon) {
+        return (pf['severity_value'] as num?)?.toDouble();
       }
     }
     return null;
@@ -421,7 +445,11 @@ class _MapPageState extends State<MapPage> {
   void initState() {
     super.initState();
     BrowserContextMenu.disableContextMenu();
-    
+    _highlightPulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    );
+
     _hitNotifier.addListener(() {
       final hitResult = _hitNotifier.value;
       final isHovering = hitResult != null && hitResult.hitValues.isNotEmpty;
@@ -432,8 +460,63 @@ class _MapPageState extends State<MapPage> {
     });
 
     _loadPhilippinesGeoJSON();
-    _fetchObservations();
     _fetchDatasets();
+    _fetchCurrentUserRole();
+    if (widget.highlightObservation != null) {
+      _showObservations = true;
+      _fetchObservations().then((_) => _applyHighlightedObservation());
+    } else {
+      _fetchObservations();
+    }
+  }
+
+  Future<void> _fetchCurrentUserRole() async {
+    try {
+      final user = Supabase.instance.client.auth.currentUser;
+      if (user == null) return;
+      final profile = await Supabase.instance.client
+          .from('users')
+          .select('role')
+          .eq('user_id', user.id)
+          .maybeSingle();
+      if (mounted && profile != null) {
+        setState(() {
+          _currentUserRole = profile['role']?.toString().toUpperCase();
+        });
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _applyHighlightedObservation() async {
+    final rawObs = widget.highlightObservation;
+    if (rawObs == null || !mounted) return;
+
+    Map<String, dynamic> obs = rawObs;
+    final id = rawObs['observation_id'] ?? rawObs['id'];
+
+    final alreadyPresent = _observationsData.any((o) => (o['observation_id'] ?? o['id']) == id);
+    if (!alreadyPresent) {
+      setState(() {
+        _observationsData = [..._observationsData, obs];
+      });
+    }
+
+    final coords = _parseCoordinates(obs['coordinates']);
+    final double? lat = obs['latitude'] != null ? double.tryParse(obs['latitude'].toString()) : coords?['lat'];
+    final double? lng = obs['longitude'] != null ? double.tryParse(obs['longitude'].toString()) : coords?['lng'];
+    if (lat == null || lng == null) return;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _mapController.move(LatLng(lat, lng), 17);
+      setState(() {
+        _highlightedLatLng = LatLng(lat, lng);
+        _selectedObservation = obs;
+      });
+      _highlightPulseController
+        ..reset()
+        ..repeat();
+    });
   }
 
   Future<void> _fetchDatasets() async {
@@ -675,6 +758,7 @@ class _MapPageState extends State<MapPage> {
           _showKriging = false;
           _showPlantations = false;
           _caPolygons.clear();
+          _caPointForecasts.clear();
           _krigingPolygons.clear();
           _plantationsData.clear();
           // Ensure it's in the list if _fetchDatasets missed it due to replication lag
@@ -729,6 +813,7 @@ class _MapPageState extends State<MapPage> {
           _showKriging = false;
           _showPlantations = false;
           _caPolygons.clear();
+          _caPointForecasts.clear();
           _krigingPolygons.clear();
           _plantationsData.clear();
           _selectedRegionProps = null;
@@ -795,6 +880,7 @@ class _MapPageState extends State<MapPage> {
   @override
   void dispose() {
     BrowserContextMenu.enableContextMenu();
+    _highlightPulseController.dispose();
     super.dispose();
   }
 
@@ -1051,25 +1137,15 @@ class _MapPageState extends State<MapPage> {
           color: Colors.white,
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           child: Padding(
-            padding: const EdgeInsets.all(12.0),
+            // Extra right padding keeps content clear of the close button,
+            // which is overlaid outside the scrollable area below.
+            padding: const EdgeInsets.fromLTRB(12.0, 12.0, 32.0, 12.0),
             child: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(popupTitle, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                    MouseRegion(
-                      cursor: SystemMouseCursors.click,
-                      child: GestureDetector(
-                        onTap: () => setState(() => _selectedPlantation = null),
-                        child: const Icon(Icons.close, size: 16, color: Colors.grey),
-                      ),
-                    ),
-                  ],
-                ),
+                Text(popupTitle, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
                 Builder(
                   builder: (context) {
 
@@ -1119,6 +1195,21 @@ class _MapPageState extends State<MapPage> {
             ),
           ),
         ),
+        Positioned(
+          top: 4,
+          right: 4,
+          child: MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              onTap: () => setState(() => _selectedPlantation = null),
+              child: Container(
+                padding: const EdgeInsets.all(4),
+                decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+                child: const Icon(Icons.close, size: 16, color: Colors.grey),
+              ),
+            ),
+          ),
+        ),
       ],
     );
   }
@@ -1128,9 +1219,11 @@ class _MapPageState extends State<MapPage> {
       // Skip deleted observations
       if (obs['is_deleted'] == true) return false;
       final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
+      final isPending = obs['under_verification'] == true || obs['verification_result'] == 'PENDING';
       if (_selectedObservationVerification == 'Verified' && !isVerified) return false;
-      if (_selectedObservationVerification == 'Unverified' && isVerified) return false;
-      
+      if (_selectedObservationVerification == 'Pending' && !isPending) return false;
+      if (_selectedObservationVerification == 'Unverified' && (isVerified || isPending)) return false;
+
       final role = obs['users'] != null && obs['users'] is Map
           ? (obs['users'] as Map)['role']?.toString().toUpperCase()
           : null;
@@ -1138,13 +1231,14 @@ class _MapPageState extends State<MapPage> {
       if (_selectedObservationUserRole == 'Expert' && !isExpert) return false;
       if (_selectedObservationUserRole == 'Community' && isExpert) return false;
 
+      if (_currentUserRole == 'EXPERT' && _selectedObservationSource != 'All') {
+        final source = obs['source']?.toString().toUpperCase();
+        if (source != _selectedObservationSource.toUpperCase()) return false;
+      }
+
       if (_showMyObservationsOnly && obs['user_id'] != Supabase.instance.client.auth.currentUser?.id) return false;
 
-      if (_hideAnonymousObservations &&
-          obs['is_anonymous'] == true &&
-          obs['user_id'] != Supabase.instance.client.auth.currentUser?.id) {
-        return false;
-      }
+      if (_showAnonymousOnly && obs['is_anonymous'] != true) return false;
 
       if (_observationStartDate != null || _observationEndDate != null) {
         final obsDateStr = obs['observation_timestamp'] as String?;
@@ -1212,6 +1306,7 @@ class _MapPageState extends State<MapPage> {
 
   // Fetches Kriging Contours from Python server
   Future<void> _fetchKriging(String datasetUrl) async {
+    final requestId = ++_krigingRequestId;
     setState(() {
       _isKrigingLoading = true;
     });
@@ -1223,6 +1318,10 @@ class _MapPageState extends State<MapPage> {
           'dataset_url': datasetUrl,
         }),
       );
+      // A newer request has since been fired; this response is stale and
+      // must not be allowed to overwrite the display.
+      if (requestId != _krigingRequestId) return;
+
       if (response.statusCode == 200) {
         final polygons = _parseGeoJSON(response.body);
         setState(() {
@@ -1232,16 +1331,20 @@ class _MapPageState extends State<MapPage> {
         debugPrint("API Error: ${response.statusCode}");
       }
     } catch (e) {
+      if (requestId != _krigingRequestId) return;
       debugPrint("Connection error: $e");
     } finally {
-      setState(() {
-        _isKrigingLoading = false;
-      });
+      if (requestId == _krigingRequestId) {
+        setState(() {
+          _isKrigingLoading = false;
+        });
+      }
     }
   }
 
   // Fetches Cellular Automata spread forecast from Python server
   Future<void> _fetchForecast(int steps, String datasetUrl) async {
+    final requestId = ++_forecastRequestId;
     setState(() {
       _isCaLoading = true;
     });
@@ -1256,20 +1359,33 @@ class _MapPageState extends State<MapPage> {
           'spread_factor': 0.08,
         }),
       );
+      // A newer request has since been fired; this response is stale and
+      // must not be allowed to overwrite the display.
+      if (requestId != _forecastRequestId) return;
+
       if (response.statusCode == 200) {
         final polygons = _parseGeoJSON(response.body);
+        final decoded = json.decode(response.body) as Map<String, dynamic>;
+        final rawPointForecasts = decoded['point_forecasts'] as List<dynamic>?;
+        final pointForecasts = rawPointForecasts != null
+            ? rawPointForecasts.map((e) => Map<String, dynamic>.from(e as Map)).toList()
+            : <Map<String, dynamic>>[];
         setState(() {
           _caPolygons = polygons;
+          _caPointForecasts = pointForecasts;
         });
       } else {
         debugPrint("API Error: ${response.statusCode}");
       }
     } catch (e) {
+      if (requestId != _forecastRequestId) return;
       debugPrint("Connection error: $e");
     } finally {
-      setState(() {
-        _isCaLoading = false;
-      });
+      if (requestId == _forecastRequestId) {
+        setState(() {
+          _isCaLoading = false;
+        });
+      }
     }
   }
 
@@ -1540,7 +1656,59 @@ class _MapPageState extends State<MapPage> {
                     },
                   ),
                 ),
-              
+
+              // Pulsing highlight ring for a programmatically focused observation,
+              // mimicking a spiderfy "unfold" reveal without disabling clustering.
+              if (_highlightedLatLng != null)
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: _highlightedLatLng!,
+                      width: 90,
+                      height: 90,
+                      alignment: Alignment.center,
+                      child: IgnorePointer(
+                        child: AnimatedBuilder(
+                          animation: _highlightPulseController,
+                          builder: (context, child) {
+                            final t = _highlightPulseController.value;
+                            final scale = 0.3 + (t * 1.4);
+                            final opacity = (1 - t).clamp(0.0, 1.0);
+                            return Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                Transform.scale(
+                                  scale: scale,
+                                  child: Container(
+                                    width: 56,
+                                    height: 56,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: Colors.orange.withValues(alpha: opacity * 0.45),
+                                    ),
+                                  ),
+                                ),
+                                Container(
+                                  width: 20,
+                                  height: 20,
+                                  decoration: BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: Colors.orange.shade700,
+                                    border: Border.all(color: Colors.white, width: 3),
+                                    boxShadow: const [
+                                      BoxShadow(color: Colors.black38, blurRadius: 4, offset: Offset(0, 1)),
+                                    ],
+                                  ),
+                                ),
+                              ],
+                            );
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+
               // Map Overlay Controls
               Positioned(
                 top: 16,
@@ -1834,6 +2002,7 @@ class _MapPageState extends State<MapPage> {
                                       _showKriging = false;
                                       _showPlantations = false;
                                       _caPolygons.clear();
+                                      _caPointForecasts.clear();
                                       _krigingPolygons.clear();
                                       _plantationsData.clear();
                                       _selectedRegionProps = null;
@@ -1936,6 +2105,7 @@ class _MapPageState extends State<MapPage> {
                                                   _showKriging = false;
                                                   _showPlantations = false;
                                                   _caPolygons.clear();
+                                                  _caPointForecasts.clear();
                                                   _krigingPolygons.clear();
                                                   _plantationsData.clear();
                                                   _selectedRegionProps = null;
@@ -2285,10 +2455,10 @@ class _MapPageState extends State<MapPage> {
                               items: _availableUserRoles.map((role) {
                                 return DropdownMenuItem(
                                   value: role,
-                                  child: Text(role, style: TextStyle(fontSize: 12, color: _showMyObservationsOnly ? Colors.grey : Colors.black87)),
+                                  child: Text(role, style: TextStyle(fontSize: 12, color: (_showMyObservationsOnly || _showAnonymousOnly) ? Colors.grey : Colors.black87)),
                                 );
                               }).toList(),
-                                onChanged: _showMyObservationsOnly ? null : (val) {
+                                onChanged: (_showMyObservationsOnly || _showAnonymousOnly) ? null : (val) {
                                   if (val != null) {
                                     setState(() {
                                       _selectedObservationUserRole = val;
@@ -2297,6 +2467,32 @@ class _MapPageState extends State<MapPage> {
                                   }
                                 },
                             ),
+                            if (_currentUserRole == 'EXPERT') ...[
+                              const SizedBox(height: 12),
+                              const Align(
+                                alignment: Alignment.centerLeft,
+                                child: Text("Filter by Source:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                              ),
+                              const SizedBox(height: 4),
+                              DropdownButton<String>(
+                                isExpanded: true,
+                                value: _selectedObservationSource,
+                                items: _availableObservationSources.map((source) {
+                                  return DropdownMenuItem(
+                                    value: source,
+                                    child: Text(source, style: TextStyle(fontSize: 12, color: _showAnonymousOnly ? Colors.grey : Colors.black87)),
+                                  );
+                                }).toList(),
+                                onChanged: _showAnonymousOnly ? null : (val) {
+                                  if (val != null) {
+                                    setState(() {
+                                      _selectedObservationSource = val;
+                                      _selectedObservation = null;
+                                    });
+                                  }
+                                },
+                              ),
+                            ],
                             const SizedBox(height: 12),
                             const Align(
                               alignment: Alignment.centerLeft,
@@ -2384,25 +2580,31 @@ class _MapPageState extends State<MapPage> {
                               ],
                             ),
                             const SizedBox(height: 12),
-                            SwitchListTile(
+                            CheckboxListTile(
+                              controlAffinity: ListTileControlAffinity.trailing,
                               contentPadding: EdgeInsets.zero,
                               title: const Text("My Observations Only", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                               value: _showMyObservationsOnly,
                               onChanged: (val) {
                                 setState(() {
-                                  _showMyObservationsOnly = val;
-                                  if (val) _selectedObservationUserRole = 'All';
+                                  _showMyObservationsOnly = val ?? false;
+                                  if (val ?? false) _selectedObservationUserRole = 'All';
                                   _selectedObservation = null;
                                 });
                               },
                             ),
-                            SwitchListTile(
+                            CheckboxListTile(
+                              controlAffinity: ListTileControlAffinity.trailing,
                               contentPadding: EdgeInsets.zero,
-                              title: const Text("Hide Anonymous Observations", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                              value: _hideAnonymousObservations,
+                              title: const Text("Show Anonymous Observations Only", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                              value: _showAnonymousOnly,
                               onChanged: (val) {
                                 setState(() {
-                                  _hideAnonymousObservations = val;
+                                  _showAnonymousOnly = val ?? false;
+                                  if (val ?? false) {
+                                    _selectedObservationUserRole = 'All';
+                                    _selectedObservationSource = 'All';
+                                  }
                                   _selectedObservation = null;
                                 });
                               },
@@ -2425,13 +2627,15 @@ class _MapPageState extends State<MapPage> {
           if (_selectedObservation != null)
             ObservationDetailsPanel(
               obs: _selectedObservation!,
-              onClose: () => setState(() => _selectedObservation = null),
-              onDelete: () async {
-                final id = _selectedObservation!['observation_id'];
-                await Supabase.instance.client
-                    .from('observations')
-                    .update({'is_deleted': true})
-                    .eq('observation_id', id);
+              currentUserRole: _currentUserRole,
+              onClose: () {
+                _highlightPulseController.stop();
+                setState(() {
+                  _selectedObservation = null;
+                  _highlightedLatLng = null;
+                });
+              },
+              onModified: () {
                 setState(() => _selectedObservation = null);
                 _fetchObservations();
               },
