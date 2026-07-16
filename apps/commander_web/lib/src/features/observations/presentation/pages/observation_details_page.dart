@@ -74,7 +74,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
             if (mounted && !_isSubmitting) {
               final newRow = payload.newRecord;
               if (widget.isVerifyMode && (newRow['under_verification'] != true || newRow['is_public'] != true || newRow['is_deleted'] == true)) {
-                _showToast('The user has dequeued, deleted, or made this observation private.', isError: true);
+                _showToast(_describeQueueExitReason(newRow), isError: true);
                 Navigator.pop(context, true); // Pop out and signal the list to refresh
               } else {
                 setState(() {
@@ -90,6 +90,23 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
           },
         )
         .subscribe();
+  }
+
+  /// Explains why an observation is no longer eligible for verification,
+  /// distinguishing "someone else already verified it" from the user
+  /// withdrawing/deleting/privating it themselves.
+  String _describeQueueExitReason(Map<String, dynamic> row) {
+    final result = row['verification_result']?.toString();
+    if (result == 'APPROVED' || result == 'REJECTED') {
+      return 'This observation has already been verified by another expert.';
+    }
+    if (row['is_deleted'] == true) {
+      return 'The user has deleted this observation.';
+    }
+    if (row['is_public'] != true) {
+      return 'The user has made this observation private.';
+    }
+    return 'The user has withdrawn this observation from the verification queue.';
   }
 
   Future<void> _fetchProvince() async {
@@ -565,7 +582,16 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
           .select();
 
       if (updateResponse.isEmpty) {
-        _showToast('Action failed: The user likely cancelled the request or set the observation to private.', isError: true);
+        String reason = 'The user likely cancelled the request or set the observation to private.';
+        try {
+          final current = await Supabase.instance.client
+              .from('observations')
+              .select('verification_result, is_public, is_deleted')
+              .eq('observation_id', observationId)
+              .maybeSingle();
+          if (current != null) reason = _describeQueueExitReason(current);
+        } catch (_) {}
+        _showToast('Action failed: $reason', isError: true);
         success = true; // Still counts as navigating away successfully
         if (mounted) {
            Navigator.pop(context, true); // Remove from list
