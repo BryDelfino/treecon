@@ -1,21 +1,23 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 
 /// Full-screen image viewer with scroll-wheel zoom and dedicated
 /// zoom in/out controls, for use on web/desktop.
 class FullScreenImageViewer extends StatefulWidget {
-  final String imageUrl;
+  final String? imageUrl;
+  final Uint8List? imageBytes;
 
-  const FullScreenImageViewer({super.key, required this.imageUrl});
+  const FullScreenImageViewer({super.key, this.imageUrl, this.imageBytes});
 
-  static void show(BuildContext context, String imageUrl) {
+  static void show(BuildContext context, String? imageUrl, {Uint8List? imageBytes}) {
     Navigator.of(context).push(
       PageRouteBuilder(
         opaque: false,
         barrierColor: Colors.black,
         pageBuilder: (context, animation, secondaryAnimation) => FadeTransition(
           opacity: animation,
-          child: FullScreenImageViewer(imageUrl: imageUrl),
+          child: FullScreenImageViewer(imageUrl: imageUrl, imageBytes: imageBytes),
         ),
       ),
     );
@@ -76,11 +78,19 @@ class _FullScreenImageViewerState extends State<FullScreenImageViewer> {
                 minScale: _minScale,
                 maxScale: _maxScale,
                 child: Center(
-                  child: Image.network(
-                    widget.imageUrl,
-                    fit: BoxFit.contain,
-                    errorBuilder: (context, error, stackTrace) => const Icon(Icons.broken_image, color: Colors.white54, size: 64),
-                  ),
+                  child: widget.imageBytes != null
+                      ? Image.memory(
+                          widget.imageBytes!,
+                          fit: BoxFit.contain,
+                          errorBuilder: (context, error, stackTrace) => const Icon(Icons.broken_image, color: Colors.white54, size: 64),
+                        )
+                      : widget.imageUrl != null
+                          ? Image.network(
+                              widget.imageUrl!,
+                              fit: BoxFit.contain,
+                              errorBuilder: (context, error, stackTrace) => const Icon(Icons.broken_image, color: Colors.white54, size: 64),
+                            )
+                          : const Icon(Icons.park_outlined, color: Colors.white54, size: 64),
                 ),
               ),
             ),
