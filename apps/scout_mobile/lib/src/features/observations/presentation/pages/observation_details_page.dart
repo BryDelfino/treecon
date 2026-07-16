@@ -16,12 +16,17 @@ class ObservationDetailsPage extends StatefulWidget {
   final Map<String, dynamic> obs;
   final bool isCached;
   final bool showViewOnMapButton;
+  /// The viewing user's role (e.g. 'EXPERT'), if already known by the caller.
+  /// Passed down instead of fetched here so expert-only fields render
+  /// immediately with the rest of the page instead of popping in late.
+  final String? currentUserRole;
 
   const ObservationDetailsPage({
     super.key,
     required this.obs,
     this.isCached = false,
     this.showViewOnMapButton = false,
+    this.currentUserRole,
   });
 
   @override
@@ -236,6 +241,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
       title: 'Delete this observation?',
       message: 'This action cannot be undone.',
       confirmLabel: 'Delete',
+      isDestructive: true,
     );
     if (!confirmed) return;
     if (!mounted) return;
@@ -602,6 +608,8 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
               if (!widget.isCached)
                 _buildMetaRow(Icons.cloud_upload, 'Upload Timestamp', uploadStr),
               _buildMetaRow(Icons.location_on, 'Location', _isLoadingProvince ? 'Loading...' : _province),
+              if (widget.currentUserRole == 'EXPERT')
+                _buildMetaRow(Icons.devices_outlined, 'Source', widget.obs['source']?.toString().toUpperCase() ?? 'UNKNOWN'),
               if (isOwner || widget.isCached)
                 _buildMetaRow(Icons.explore, 'Coordinates (Lat/Lng)', '$latStr, $lngStr'),
               if (isVerified) ...[
@@ -650,25 +658,29 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                   ),
                   child: Column(
                     children: [
-                      SwitchListTile(
+                      CheckboxListTile(
+                        controlAffinity: ListTileControlAffinity.trailing,
                         title: const Text('Public Observation', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
                         subtitle: const Text('Allow others to view this', style: TextStyle(fontSize: 12)),
                         value: _isPublic,
-                        activeTrackColor: Colors.green[700],
+                        activeColor: Colors.green[700],
                         onChanged: (val) {
-                          setState(() => _isPublic = val);
-                          _updatePrivacySettings(val, _isAnonymous);
+                          final newVal = val ?? false;
+                          setState(() => _isPublic = newVal);
+                          _updatePrivacySettings(newVal, _isAnonymous);
                         },
                       ),
                       const Divider(height: 1),
-                      SwitchListTile(
+                      CheckboxListTile(
+                        controlAffinity: ListTileControlAffinity.trailing,
                         title: const Text('Submit Anonymously', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
                         subtitle: const Text('Hide your username', style: TextStyle(fontSize: 12)),
                         value: _isAnonymous,
-                        activeTrackColor: Colors.green[700],
+                        activeColor: Colors.green[700],
                         onChanged: (val) {
-                          setState(() => _isAnonymous = val);
-                          _updatePrivacySettings(_isPublic, val);
+                          final newVal = val ?? false;
+                          setState(() => _isAnonymous = newVal);
+                          _updatePrivacySettings(_isPublic, newVal);
                         },
                       ),
                     ],
@@ -741,8 +753,8 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                 ),
               ],
 
-              const SizedBox(height: 12),
-              
+              const SizedBox(height: 4),
+
               if (isOwner)
                 OutlinedButton.icon(
                   onPressed: _handleDelete,
@@ -803,6 +815,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
     required String title,
     required String message,
     required String confirmLabel,
+    bool isDestructive = false,
   }) async {
     final result = await showDialog<bool>(
       context: context,
@@ -817,6 +830,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
             ),
             FilledButton(
               onPressed: () => Navigator.of(dialogContext).pop(true),
+              style: isDestructive ? FilledButton.styleFrom(backgroundColor: Colors.red) : null,
               child: Text(confirmLabel),
             ),
           ],
