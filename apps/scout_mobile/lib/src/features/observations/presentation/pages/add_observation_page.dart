@@ -11,6 +11,7 @@ import 'dart:async';
 import '../../data/cached_observation.dart';
 import '../../data/observation_local_db.dart';
 import 'package:scout_mobile/src/core/services/network_service.dart';
+import '../widgets/full_screen_image_viewer.dart';
 
 class AddObservationPage extends StatefulWidget {
   const AddObservationPage({super.key});
@@ -126,6 +127,27 @@ class _AddObservationPageState extends State<AddObservationPage> {
     }
   }
 
+  Future<bool> _showSyncConfirmation() async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Sync this observation?'),
+        content: const Text('This will upload the observation to the system.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('Sync'),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
+  }
+
   Future<void> _saveObservation() async {
     if (_imageFile == null) {
       _showSnackBar('Please take or select a photo first', isError: true);
@@ -135,6 +157,11 @@ class _AddObservationPageState extends State<AddObservationPage> {
     if (_currentPosition == null) {
       _showSnackBar('Waiting for valid GPS coordinates...', isError: true);
       return;
+    }
+
+    if (_syncImmediately) {
+      final confirmed = await _showSyncConfirmation();
+      if (!confirmed || !mounted) return;
     }
 
     setState(() {
@@ -224,9 +251,43 @@ class _AddObservationPageState extends State<AddObservationPage> {
     );
   }
 
+  Future<bool> _confirmDiscardChanges() async {
+    if (_imageFile == null) return true;
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Discard Observation?'),
+        content: const Text('You have an unsaved photo. If you leave now, it will be lost.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Keep Editing', style: TextStyle(color: Colors.grey)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Discard', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      canPop: _imageFile == null,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        final navigator = Navigator.of(context);
+        if (await _confirmDiscardChanges() && mounted) {
+          navigator.pop();
+        }
+      },
+      child: Scaffold(
       appBar: AppBar(
         title: const Text(
           'New Observation',
@@ -241,23 +302,41 @@ class _AddObservationPageState extends State<AddObservationPage> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // Image Preview container
-            GestureDetector(
-              onTap: () {
-                _pickImage(ImageSource.camera);
-              },
-              child: Container(
-                height: 250,
-                decoration: BoxDecoration(
-                  color: Colors.green[50],
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: Colors.green[200]!, width: 2),
-                ),
-                child: _imageFile != null
-                    ? ClipRRect(
-                        borderRadius: BorderRadius.circular(18),
-                        child: Image.file(_imageFile!, fit: BoxFit.cover),
-                      )
-                    : Column(
+            Container(
+              height: 250,
+              decoration: BoxDecoration(
+                color: Colors.green[50],
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.green[200]!, width: 2),
+              ),
+              child: _imageFile != null
+                  ? Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(18),
+                          child: GestureDetector(
+                            onTap: () => FullScreenImageViewer.show(context, localImagePath: _imageFile!.path),
+                            child: Image.file(_imageFile!, fit: BoxFit.cover),
+                          ),
+                        ),
+                        Positioned(
+                          top: 8,
+                          right: 8,
+                          child: Container(
+                            decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(20)),
+                            child: IconButton(
+                              icon: const Icon(Icons.refresh, color: Colors.white),
+                              tooltip: 'Replace photo',
+                              onPressed: () => _pickImage(ImageSource.camera),
+                            ),
+                          ),
+                        ),
+                      ],
+                    )
+                  : GestureDetector(
+                      onTap: () => _pickImage(ImageSource.camera),
+                      child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
                           Icon(Icons.camera_alt_outlined, size: 64, color: Colors.green[300]),
@@ -277,73 +356,88 @@ class _AddObservationPageState extends State<AddObservationPage> {
                           ),
                         ],
                       ),
-              ),
+                    ),
             ),
             const SizedBox(height: 24),
 
-            // Settings
-            Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: Colors.grey[200]!),
-              ),
-              child: Column(
-                children: [
-                  SwitchListTile(
-                    title: const Text('Public Observation', style: TextStyle(fontWeight: FontWeight.w600)),
-                    subtitle: const Text('Allow others to view this observation', style: TextStyle(fontSize: 12)),
-                    value: _isPublic,
-                    activeTrackColor: Colors.green[700],
-                    onChanged: (val) => setState(() => _isPublic = val),
-                  ),
-                  const Divider(height: 1),
-                  SwitchListTile(
-                    title: const Text('Submit Anonymously', style: TextStyle(fontWeight: FontWeight.w600)),
-                    subtitle: const Text('Hide your username from public view', style: TextStyle(fontSize: 12)),
-                    value: _isAnonymous,
-                    activeTrackColor: Colors.green[700],
-                    onChanged: (val) => setState(() => _isAnonymous = val),
-                  ),
-                  if (_isOnline) ...[
-                    const Divider(height: 1),
-                    SwitchListTile(
-                      title: const Text('Sync Immediately', style: TextStyle(fontWeight: FontWeight.w600)),
-                      subtitle: const Text('Upload to the system right after saving', style: TextStyle(fontSize: 12)),
-                      value: _syncImmediately,
-                      activeTrackColor: Colors.green[700],
-                      onChanged: (val) => setState(() => _syncImmediately = val),
+            IgnorePointer(
+              ignoring: _imageFile == null,
+              child: AnimatedOpacity(
+                opacity: _imageFile == null ? 0.4 : 1.0,
+                duration: const Duration(milliseconds: 200),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // Settings
+                    Container(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: Colors.grey[200]!),
+                      ),
+                      child: Column(
+                        children: [
+                          CheckboxListTile(
+                            controlAffinity: ListTileControlAffinity.trailing,
+                            title: const Text('Public Observation', style: TextStyle(fontWeight: FontWeight.w600)),
+                            subtitle: const Text('Allow others to view this observation', style: TextStyle(fontSize: 12)),
+                            value: _isPublic,
+                            activeColor: Colors.green[700],
+                            onChanged: (val) => setState(() => _isPublic = val ?? false),
+                          ),
+                          const Divider(height: 1),
+                          CheckboxListTile(
+                            controlAffinity: ListTileControlAffinity.trailing,
+                            title: const Text('Submit Anonymously', style: TextStyle(fontWeight: FontWeight.w600)),
+                            subtitle: const Text('Hide your username from public view', style: TextStyle(fontSize: 12)),
+                            value: _isAnonymous,
+                            activeColor: Colors.green[700],
+                            onChanged: (val) => setState(() => _isAnonymous = val ?? false),
+                          ),
+                          if (_isOnline) ...[
+                            const Divider(height: 1),
+                            CheckboxListTile(
+                              controlAffinity: ListTileControlAffinity.trailing,
+                              title: const Text('Sync Immediately', style: TextStyle(fontWeight: FontWeight.w600)),
+                              subtitle: const Text('Upload to the system right after saving', style: TextStyle(fontSize: 12)),
+                              value: _syncImmediately,
+                              activeColor: Colors.green[700],
+                              onChanged: (val) => setState(() => _syncImmediately = val ?? false),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: Colors.blue[50],
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: Colors.blue[100]!),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.info_outline, color: Colors.blue[800]),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              'Privacy settings can be modified later from the observation\'s details page.',
+                              style: TextStyle(color: Colors.blue[900], fontSize: 13, fontWeight: FontWeight.w500),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ],
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-              decoration: BoxDecoration(
-                color: Colors.blue[50],
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.blue[100]!),
-              ),
-              child: Row(
-                children: [
-                  Icon(Icons.info_outline, color: Colors.blue[800]),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Text(
-                      'Privacy settings can be modified later from the observation\'s details page.',
-                      style: TextStyle(color: Colors.blue[900], fontSize: 13, fontWeight: FontWeight.w500),
-                    ),
-                  ),
-                ],
+                ),
               ),
             ),
             const SizedBox(height: 28),
 
             // Submit Button
             ElevatedButton(
-              onPressed: _isSaving || _isLoadingLocation ? null : _saveObservation,
+              onPressed: _imageFile == null || _isSaving || _isLoadingLocation ? null : _saveObservation,
               style: ElevatedButton.styleFrom(
                 backgroundColor: Colors.green[700],
                 foregroundColor: Colors.white,
@@ -364,6 +458,7 @@ class _AddObservationPageState extends State<AddObservationPage> {
             ),
           ],
         ),
+      ),
       ),
     );
   }
