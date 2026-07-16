@@ -13,6 +13,7 @@ import 'package:shared_services/shared_services.dart';
 import 'package:scout_mobile/src/core/services/network_service.dart';
 import 'package:intl/intl.dart';
 import 'package:scout_mobile/src/features/observations/presentation/pages/observation_details_page.dart';
+import 'package:scout_mobile/src/features/observations/presentation/widgets/full_screen_image_viewer.dart';
 
 class MapPage extends StatefulWidget {
   final Map<String, dynamic>? highlightObservation;
@@ -29,10 +30,19 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
   late final AnimationController _highlightPulseController;
   List<Polygon> _caPolygons = [];
   List<Polygon> _krigingPolygons = [];
+  // Per-plantation-point forecast values (own coordinates, not province
+  // centroid), keyed by lat/lng. Used for plantation severity instead of
+  // the coarser province-level _caPolygons lookup.
+  List<Map<String, dynamic>> _caPointForecasts = [];
   bool _isLoading = true;
   bool _isCaLoading = false;
   bool _isKrigingLoading = false;
   DateTime? _lastBackPress;
+  // Incremented on every _fetchForecast/_fetchKriging call; used to discard
+  // responses from superseded requests that resolve out of order (e.g. a
+  // lower-step forecast request that finishes after a later, higher-step one).
+  int _forecastRequestId = 0;
+  int _krigingRequestId = 0;
 
   // Simulation layers state
   bool _showCA = false;
@@ -104,13 +114,15 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
   String _selectedObservationVerification = 'All';
   String _selectedObservationUserRole = 'All';
   String _selectedObservationProvince = 'All';
+  String _selectedObservationSource = 'All';
   DateTime? _observationStartDate;
   DateTime? _observationEndDate;
   bool _showMyObservationsOnly = false;
-  bool _hideAnonymousObservations = false;
+  bool _showAnonymousOnly = false;
   List<Map<String, dynamic>> _observationsData = [];
-  final List<String> _availableVerificationStatuses = ['All', 'Verified', 'Unverified'];
+  final List<String> _availableVerificationStatuses = ['All', 'Verified', 'Pending', 'Unverified'];
   final List<String> _availableUserRoles = ['All', 'Expert', 'Community'];
+  final List<String> _availableObservationSources = ['All', 'Mobile', 'Web'];
 
   Map<String, dynamic>? _selectedRegionProps;
 
@@ -344,6 +356,7 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
     setState(() {
       _selectedDataset = dataset;
       _caPolygons.clear();
+      _caPointForecasts.clear();
       _krigingPolygons.clear();
       _plantationsData.clear();
     });
@@ -533,20 +546,24 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
     final filtered = _plantationsData.where((p) {
       final lat = double.tryParse(p['latitude'].toString()) ?? 0.0;
       final lng = double.tryParse(p['longitude'].toString()) ?? 0.0;
-      final severity = double.tryParse((p['GSI'] ?? p['severity_index_pct'] ?? 0.0).toString()) ?? 0.0;
-      
+      final groundTruthSeverity = double.tryParse((p['GSI'] ?? p['severity_index_pct'] ?? 0.0).toString()) ?? 0.0;
+      final forecastedSeverity = _getCAForecastForPoint(LatLng(lat, lng));
+      final severity = forecastedSeverity ?? groundTruthSeverity;
+
       if (_selectedPlantationSeverity != 'All' && _getSeverityClass(severity) != _selectedPlantationSeverity) return false;
       if (_selectedPlantationProvince != 'All' && _getProvinceForObservation(LatLng(lat, lng)) != _selectedPlantationProvince) return false;
-      
+
       return true;
     }).toList();
 
     return filtered.map((p) {
       final lat = double.tryParse(p['latitude'].toString()) ?? 0.0;
       final lng = double.tryParse(p['longitude'].toString()) ?? 0.0;
-      
-      final severity = double.tryParse((p['GSI'] ?? p['severity_index_pct'] ?? 0.0).toString()) ?? 0.0;
-      
+
+      final groundTruthSeverity = double.tryParse((p['GSI'] ?? p['severity_index_pct'] ?? 0.0).toString()) ?? 0.0;
+      final forecastedSeverity = _getCAForecastForPoint(LatLng(lat, lng));
+      final severity = forecastedSeverity ?? groundTruthSeverity;
+
       Color color;
       if (severity < 10.0) {
         color = const Color(0xFF4CAF50);
@@ -723,8 +740,10 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
     final filtered = _observationsData.where((obs) {
       if (obs['is_deleted'] == true) return false;
       final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
+      final isPending = obs['under_verification'] == true || obs['verification_result'] == 'PENDING';
       if (_selectedObservationVerification == 'Verified' && !isVerified) return false;
-      if (_selectedObservationVerification == 'Unverified' && isVerified) return false;
+      if (_selectedObservationVerification == 'Pending' && !isPending) return false;
+      if (_selectedObservationVerification == 'Unverified' && (isVerified || isPending)) return false;
 
       final role = obs['users'] != null && obs['users'] is Map
           ? (obs['users'] as Map)['role']?.toString().toUpperCase()
@@ -733,13 +752,14 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
       if (_selectedObservationUserRole == 'Expert' && !isExpert) return false;
       if (_selectedObservationUserRole == 'Community' && isExpert) return false;
 
+      if (_currentUserRole == 'EXPERT' && _selectedObservationSource != 'All') {
+        final source = obs['source']?.toString().toUpperCase();
+        if (source != _selectedObservationSource.toUpperCase()) return false;
+      }
+
       if (_showMyObservationsOnly && obs['user_id'] != Supabase.instance.client.auth.currentUser?.id) return false;
 
-      if (_hideAnonymousObservations &&
-          obs['is_anonymous'] == true &&
-          obs['user_id'] != Supabase.instance.client.auth.currentUser?.id) {
-        return false;
-      }
+      if (_showAnonymousOnly && obs['is_anonymous'] != true) return false;
 
       if (_observationStartDate != null || _observationEndDate != null) {
         final obsDateStr = obs['observation_timestamp'] as String?;
@@ -805,11 +825,12 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
     final isOwner = obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
     final province = _getProvinceForObservation(LatLng(lat, lng));
     final isVerified = obs['verification_result'] == 'APPROVED' || obs['verification_result'] == 'REJECTED';
+    final isPending = obs['under_verification'] == true || obs['verification_result'] == 'PENDING';
     final rawTimestamp = obs['observation_timestamp'];
     final rawDate = rawTimestamp != null ? DateTime.tryParse(rawTimestamp.toString()) : null;
     final date = rawDate != null ? DateFormat.yMMMd().add_jm().format(rawDate.toLocal()) : 'Unknown Date';
     final imageUrl = obs['image_url']?.toString();
-    final remarks = obs['remarks']?.toString() ?? 'No remarks provided.';
+    final remarks = obs['remarks']?.toString() ?? '';
 
     final isAnonymous = obs['is_anonymous'] == true;
     final contributorName = (isAnonymous && !isOwner)
@@ -870,19 +891,22 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
               ),
               const Divider(height: 20),
               if (imageUrl != null && imageUrl.isNotEmpty) ...[
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: Image.network(imageUrl, height: 140, width: double.infinity, fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) => const SizedBox(height: 140, child: Center(child: Icon(Icons.broken_image, color: Colors.grey))),
+                GestureDetector(
+                  onTap: () => FullScreenImageViewer.show(context, imageUrl: imageUrl),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.network(imageUrl, height: 140, width: double.infinity, fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) => const SizedBox(height: 140, child: Center(child: Icon(Icons.broken_image, color: Colors.grey))),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 12),
               ],
               Row(
                 children: [
-                  Icon(isVerified ? Icons.verified : Icons.pending, size: 16, color: isVerified ? Colors.blue : Colors.orange),
+                  Icon(isVerified ? Icons.verified : (isPending ? Icons.pending_actions : Icons.pending), size: 16, color: isVerified ? Colors.blue : (isPending ? Colors.purple : Colors.orange)),
                   const SizedBox(width: 4),
-                  Text(isVerified ? "Verified" : "Unverified", style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: isVerified ? Colors.blue : Colors.orange)),
+                  Text(isVerified ? "Verified" : (isPending ? "Pending Verification" : "Unverified"), style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: isVerified ? Colors.blue : (isPending ? Colors.purple : Colors.orange))),
                 ],
               ),
               if (isVerified) ...[
@@ -907,7 +931,7 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
                     const SizedBox(width: 4),
                     Icon(Icons.visibility_off_rounded, size: 13, color: Colors.purple[700]),
                   ],
-                  if (isExpert) ...[
+                  if (isExpert && (!isAnonymous || isOwner)) ...[
                     const SizedBox(width: 4),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
@@ -919,36 +943,21 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
               ),
               const SizedBox(height: 4),
               Text("Observation Timestamp: $date", style: const TextStyle(fontSize: 13)),
+              if (_currentUserRole == 'EXPERT' && isExpert && (!isAnonymous || isOwner))
+                Text("Source: ${obs['source']?.toString().toUpperCase() ?? 'UNKNOWN'}", style: const TextStyle(fontSize: 13)),
               Text("Province: $province", style: const TextStyle(fontSize: 13)),
               if (isOwner)
                 Text("Lat/Lng: ${lat.toStringAsFixed(5)}, ${lng.toStringAsFixed(5)}", style: const TextStyle(fontSize: 13)),
               const SizedBox(height: 8),
 
-              (() {
-                final hasRemarks = remarks.trim().isNotEmpty;
-                final isPending = obs['under_verification'] == true || obs['verification_result'] == 'PENDING';
-                
-                bool shouldShowRemarksSection = false;
-                if (hasRemarks) {
-                  shouldShowRemarksSection = true;
-                } else if (isPending) {
-                  shouldShowRemarksSection = true;
-                }
-
-                if (shouldShowRemarksSection) {
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text("Remarks", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
-                      if (hasRemarks)
-                        Text(remarks, style: const TextStyle(fontSize: 13))
-                      else
-                        const Text('Remarks are hidden until verified.', style: TextStyle(fontSize: 13, color: Colors.grey, fontStyle: FontStyle.italic)),
-                    ],
-                  );
-                }
-                return const SizedBox.shrink();
-              })(),
+              if (remarks.trim().isNotEmpty)
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text("Remarks", style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12, color: Colors.grey)),
+                    Text(remarks, style: const TextStyle(fontSize: 13)),
+                  ],
+                ),
               
               if (isOwner) ...[
                 const SizedBox(height: 16),
@@ -963,6 +972,7 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
                           builder: (context) => ObservationDetailsPage(
                             obs: obs,
                             isCached: false,
+                            currentUserRole: _currentUserRole,
                           ),
                         ),
                       ).then((result) {
@@ -994,6 +1004,7 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
   // --- Kriging Fetch ---
   Future<void> _fetchKriging(String datasetUrl) async {
     if (!mounted) return;
+    final requestId = ++_krigingRequestId;
     setState(() {
       _isKrigingLoading = true;
     });
@@ -1005,6 +1016,10 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
           'dataset_url': datasetUrl,
         }),
       );
+      // A newer request has since been fired; this response is stale and
+      // must not be allowed to overwrite the display.
+      if (requestId != _krigingRequestId) return;
+
       if (response.statusCode == 200 && mounted) {
         final polygons = _parseGeoJSON(response.body);
         setState(() {
@@ -1015,10 +1030,11 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
         _showToast('Failed to load spread mapper data (${response.statusCode}).');
       }
     } catch (e) {
+      if (requestId != _krigingRequestId) return;
       debugPrint("Connection error: $e");
       _showToast('Could not reach the spatial engine: $e');
     } finally {
-      if (mounted) {
+      if (mounted && requestId == _krigingRequestId) {
         setState(() {
           _isKrigingLoading = false;
         });
@@ -1029,6 +1045,7 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
   // --- CA Forecast Fetch ---
   Future<void> _fetchForecast(int steps, String datasetUrl) async {
     if (!mounted) return;
+    final requestId = ++_forecastRequestId;
     setState(() {
       _isCaLoading = true;
     });
@@ -1043,20 +1060,31 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
           'spread_factor': 0.08,
         }),
       );
+      // A newer request has since been fired; this response is stale and
+      // must not be allowed to overwrite the display.
+      if (requestId != _forecastRequestId) return;
+
       if (response.statusCode == 200 && mounted) {
         final polygons = _parseGeoJSON(response.body);
+        final decoded = json.decode(response.body) as Map<String, dynamic>;
+        final rawPointForecasts = decoded['point_forecasts'] as List<dynamic>?;
+        final pointForecasts = rawPointForecasts != null
+            ? rawPointForecasts.map((e) => Map<String, dynamic>.from(e as Map)).toList()
+            : <Map<String, dynamic>>[];
         setState(() {
           _caPolygons = polygons;
+          _caPointForecasts = pointForecasts;
         });
       } else {
         debugPrint("API Error: ${response.statusCode} ${response.body}");
         _showToast('Failed to load forecast data (${response.statusCode}).');
       }
     } catch (e) {
+      if (requestId != _forecastRequestId) return;
       debugPrint("Connection error: $e");
       _showToast('Could not reach the spatial engine: $e');
     } finally {
-      if (mounted) {
+      if (mounted && requestId == _forecastRequestId) {
         setState(() {
           _isCaLoading = false;
         });
@@ -1366,6 +1394,7 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
                               _showKriging = false;
                               _showPlantations = false;
                               _caPolygons.clear();
+                              _caPointForecasts.clear();
                               _krigingPolygons.clear();
                               _plantationsData.clear();
                             });
@@ -1722,16 +1751,40 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
                             items: _availableUserRoles.map((role) {
                               return DropdownMenuItem(
                                 value: role,
-                                child: Text(role, style: TextStyle(fontSize: 12, color: _showMyObservationsOnly ? Colors.grey : Colors.black87)),
+                                child: Text(role, style: TextStyle(fontSize: 12, color: (_showMyObservationsOnly || _showAnonymousOnly) ? Colors.grey : Colors.black87)),
                               );
                             }).toList(),
-                            onChanged: _showMyObservationsOnly ? null : (val) {
+                            onChanged: (_showMyObservationsOnly || _showAnonymousOnly) ? null : (val) {
                               if (val != null) {
                                 setModalState(() => _selectedObservationUserRole = val);
                                 setState(() => _selectedObservationUserRole = val);
                               }
                             },
                           ),
+                          if (_currentUserRole == 'EXPERT') ...[
+                            const SizedBox(height: 12),
+                            const Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text("Filter by Source:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            ),
+                            const SizedBox(height: 4),
+                            DropdownButton<String>(
+                              isExpanded: true,
+                              value: _selectedObservationSource,
+                              items: _availableObservationSources.map((source) {
+                                return DropdownMenuItem(
+                                  value: source,
+                                  child: Text(source, style: TextStyle(fontSize: 12, color: _showAnonymousOnly ? Colors.grey : Colors.black87)),
+                                );
+                              }).toList(),
+                              onChanged: _showAnonymousOnly ? null : (val) {
+                                if (val != null) {
+                                  setModalState(() => _selectedObservationSource = val);
+                                  setState(() => _selectedObservationSource = val);
+                                }
+                              },
+                            ),
+                          ],
                           const SizedBox(height: 12),
                           const Align(
                             alignment: Alignment.centerLeft,
@@ -1810,31 +1863,41 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
                             ],
                           ),
                           const SizedBox(height: 12),
-                          SwitchListTile(
+                          CheckboxListTile(
+                            controlAffinity: ListTileControlAffinity.trailing,
                             contentPadding: EdgeInsets.zero,
                             title: const Text("My Observations Only", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
                             value: _showMyObservationsOnly,
                             onChanged: (val) {
                               setModalState(() {
-                                _showMyObservationsOnly = val;
-                                if (val) _selectedObservationUserRole = 'All';
+                                _showMyObservationsOnly = val ?? false;
+                                if (val ?? false) _selectedObservationUserRole = 'All';
                               });
                               setState(() {
-                                _showMyObservationsOnly = val;
-                                if (val) _selectedObservationUserRole = 'All';
+                                _showMyObservationsOnly = val ?? false;
+                                if (val ?? false) _selectedObservationUserRole = 'All';
                               });
                             },
                           ),
-                          SwitchListTile(
+                          CheckboxListTile(
+                            controlAffinity: ListTileControlAffinity.trailing,
                             contentPadding: EdgeInsets.zero,
-                            title: const Text("Hide Anonymous Observations", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                            value: _hideAnonymousObservations,
+                            title: const Text("Show Anonymous Observations Only", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                            value: _showAnonymousOnly,
                             onChanged: (val) {
                               setModalState(() {
-                                _hideAnonymousObservations = val;
+                                _showAnonymousOnly = val ?? false;
+                                if (val ?? false) {
+                                  _selectedObservationUserRole = 'All';
+                                  _selectedObservationSource = 'All';
+                                }
                               });
                               setState(() {
-                                _hideAnonymousObservations = val;
+                                _showAnonymousOnly = val ?? false;
+                                if (val ?? false) {
+                                  _selectedObservationUserRole = 'All';
+                                  _selectedObservationSource = 'All';
+                                }
                               });
                             },
                           ),
@@ -1887,13 +1950,21 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
   }
 
   double? _getCAForecastForPoint(LatLng point) {
-    if (!_showCA || _caPolygons.isEmpty) return null;
-    for (var poly in _caPolygons) {
-      if (_isPointInPolygon(point, poly.points)) {
-        final props = poly.hitValue as Map<String, dynamic>?;
-        if (props != null) {
-          return double.tryParse(props['severity_value']?.toString() ?? '');
-        }
+    if (!_showCA || _caPointForecasts.isEmpty) return null;
+    // Matches by proximity rather than exact equality, since floating point
+    // values pass through CSV parsing, the backend, and JSON round-trips.
+    // The backend now returns one forecast entry per exact plantation
+    // coordinate (not grid-snapped), so this only needs to tolerate
+    // floating-point round-trip noise -- not spatial proximity. A looser
+    // epsilon here would risk matching a marker to a *different* nearby
+    // plantation point's forecast.
+    const epsilon = 0.000001; // ~11cm
+    for (final pf in _caPointForecasts) {
+      final lat = (pf['latitude'] as num?)?.toDouble();
+      final lng = (pf['longitude'] as num?)?.toDouble();
+      if (lat == null || lng == null) continue;
+      if ((lat - point.latitude).abs() < epsilon && (lng - point.longitude).abs() < epsilon) {
+        return (pf['severity_value'] as num?)?.toDouble();
       }
     }
     return null;
