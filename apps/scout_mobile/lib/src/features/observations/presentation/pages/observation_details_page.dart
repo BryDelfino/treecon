@@ -408,7 +408,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
     final id = widget.obs['observation_id'];
 
     if (!_canManageObservationPrivacy(
-      isOwner: widget.obs['user_id'] == Supabase.instance.client.auth.currentUser?.id,
+      isOwner: widget.isCached || widget.obs['user_id'] == Supabase.instance.client.auth.currentUser?.id,
       verificationResult: widget.obs['verification_result']?.toString(),
     )) {
       _showToast('Rejected observations cannot change their visibility settings.');
@@ -525,7 +525,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
     
     final imageUrl = widget.obs['image_url']?.toString();
     final localImagePath = widget.obs['image_path']?.toString();
-    final isOwner = widget.obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
+    final isOwner = widget.isCached || widget.obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
     final canManagePrivacy = _canManageObservationPrivacy(
       isOwner: isOwner,
       verificationResult: rawVerificationResult,
@@ -686,6 +686,22 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                     ],
                   ),
                 ),
+                if (widget.isCached) ...[
+                  const SizedBox(height: 8),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.info_outline, size: 14, color: Colors.amber[800]),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          'These settings only take effect once this observation is synced to the system.',
+                          style: TextStyle(fontSize: 11, color: Colors.amber[900]),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ],
 
 
