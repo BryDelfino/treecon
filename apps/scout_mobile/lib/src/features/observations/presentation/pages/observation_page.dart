@@ -1239,7 +1239,7 @@ class _ObservationPageState extends State<ObservationPage> {
               builder: (context) => ObservationDetailsPage(
                 obs: obs,
                 isCached: isLocal,
-                showViewOnMapButton: !isLocal && verificationResult != 'REJECTED',
+                showViewOnMapButton: isLocal ? NetworkService.instance.isOnline : verificationResult != 'REJECTED',
                 currentUserRole: _currentUserRole,
               ),
             ),
@@ -1349,24 +1349,26 @@ class _ObservationPageState extends State<ObservationPage> {
                                   ],
                                 ),
                               ),
-                            // Verification Badge
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                              decoration: BoxDecoration(
-                                color: verifyBg,
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(color: verifyTextCol.withValues(alpha: 0.3)),
-                              ),
-                              child: Text(
-                                verifyText,
-                                style: TextStyle(
-                                  fontSize: 10,
-                                  fontWeight: FontWeight.w800,
-                                  color: verifyTextCol,
-                                  letterSpacing: 0.5,
+                            // Verification Badge (not applicable to local cache;
+                            // observations only gain a verification state once synced)
+                            if (!isLocal)
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: verifyBg,
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(color: verifyTextCol.withValues(alpha: 0.3)),
+                                ),
+                                child: Text(
+                                  verifyText,
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w800,
+                                    color: verifyTextCol,
+                                    letterSpacing: 0.5,
+                                  ),
                                 ),
                               ),
-                            ),
                             if (verificationResult != 'REJECTED') ...[
                               // Privacy Badge
                               Container(
