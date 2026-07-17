@@ -109,7 +109,9 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
   bool _isKrigingExpanded = false;
   String _selectedPlantationProvince = 'All';
   String _selectedPlantationSeverity = 'All';
-  final List<String> _availableSeverities = ['All', 'Healthy', 'Low', 'Moderate', 'High', 'Severe'];
+  final List<String> _availableSeverities = ['All', 'Healthy', 'Low', 'Moderate', 'High', 'Critical'];
+  String _selectedPlantationGri = 'All';
+  final List<String> _availableGriClasses = ['All', 'Rare', 'Occasional', 'Common', 'Very Common', 'Widespread'];
 
   // Observations state
   bool _showObservations = true;
@@ -277,19 +279,27 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
   String _getProvinceForObservation(LatLng point) => ProvinceLookup.provinceForPoint(point.latitude, point.longitude);
 
   String _getSeverityClass(double value) {
-    if (value < 10.0) return "Healthy";
-    if (value < 25.0) return "Low";
-    if (value < 50.0) return "Moderate";
-    if (value < 75.0) return "High";
-    return "Severe";
+    if (value == 0.0) return "Healthy";
+    if (value <= 10.0) return "Low";
+    if (value <= 25.0) return "Moderate";
+    if (value <= 60.0) return "High";
+    return "Critical";
   }
 
   Color _getSeverityColor(double value) {
-    if (value < 10.0) return Colors.green.shade700;
-    if (value < 25.0) return Colors.yellow.shade800;
-    if (value < 50.0) return Colors.orange;
-    if (value < 75.0) return Colors.deepOrange;
+    if (value == 0.0) return Colors.green.shade700;
+    if (value <= 10.0) return Colors.yellow.shade800;
+    if (value <= 25.0) return Colors.orange;
+    if (value <= 60.0) return Colors.deepOrange;
     return Colors.red;
+  }
+
+  String _getGriClass(double value) {
+    if (value < 10.0) return "Rare";
+    if (value <= 25.0) return "Occasional";
+    if (value <= 50.0) return "Common";
+    if (value <= 75.0) return "Very Common";
+    return "Widespread";
   }
 
   // --- Dataset Fetching ---
@@ -559,6 +569,11 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
       if (_selectedPlantationSeverity != 'All' && _getSeverityClass(severity) != _selectedPlantationSeverity) return false;
       if (_selectedPlantationProvince != 'All' && _getProvinceForObservation(LatLng(lat, lng)) != _selectedPlantationProvince) return false;
 
+      if (_selectedPlantationGri != 'All') {
+        final griVal = double.tryParse((p['gri'] ?? p['GRI'] ?? '').toString());
+        if (griVal == null || _getGriClass(griVal) != _selectedPlantationGri) return false;
+      }
+
       return true;
     }).toList();
 
@@ -571,13 +586,13 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
       final severity = forecastedSeverity ?? groundTruthSeverity;
 
       Color color;
-      if (severity < 10.0) {
+      if (severity == 0.0) {
         color = const Color(0xFF4CAF50);
-      } else if (severity < 25.0) {
+      } else if (severity <= 10.0) {
         color = const Color(0xFFFFEB3B);
-      } else if (severity < 50.0) {
+      } else if (severity <= 25.0) {
         color = const Color(0xFFFF9800);
-      } else if (severity < 75.0) {
+      } else if (severity <= 60.0) {
         color = const Color(0xFFF44336);
       } else {
         color = const Color(0xFF800000);
@@ -1697,6 +1712,32 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
                               }
                             },
                           ),
+                          const SizedBox(height: 12),
+                          const Align(
+                            alignment: Alignment.centerLeft,
+                            child: Text("Filter by GRI:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                          ),
+                          const SizedBox(height: 4),
+                          DropdownButton<String>(
+                            isExpanded: true,
+                            value: _selectedPlantationGri,
+                            items: _availableGriClasses.map((gri) {
+                              return DropdownMenuItem(
+                                value: gri,
+                                child: Text(gri, style: const TextStyle(fontSize: 12)),
+                              );
+                            }).toList(),
+                            onChanged: (val) {
+                              if (val != null) {
+                                setModalState(() {
+                                  _selectedPlantationGri = val;
+                                });
+                                setState(() {
+                                  _selectedPlantationGri = val;
+                                });
+                              }
+                            },
+                          ),
                         ],
                       ),
                       ExpansionTile(
@@ -2143,7 +2184,7 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
                           _legendItem(Colors.yellow.shade700, "Low"),
                           _legendItem(Colors.orange, "Moderate"),
                           _legendItem(Colors.red, "High"),
-                          _legendItem(const Color(0xFF800000), "Severe"),
+                          _legendItem(const Color(0xFF800000), "Critical"),
                         ],
                       ),
                       const SizedBox(height: 24),
@@ -2253,7 +2294,18 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
               Text("Region: ${getValue(['region', 'region_number'])}", style: const TextStyle(fontSize: 13)),
               Text("Plantation: ${getValue(['plantation', 'plantation_id', 'plantation_number'])}", style: const TextStyle(fontSize: 13)),
               Text("Plot Number: ${getValue(['plot', 'plot_number', 'plotnumber'])}", style: const TextStyle(fontSize: 13)),
-              Text("GRI: ${getValue(['gri', 'GRI'])}", style: const TextStyle(fontSize: 13)),
+              Builder(builder: (context) {
+                final griStr = getValue(['gri', 'GRI']);
+                final griVal = double.tryParse(griStr);
+                return Text(
+                  "GRI: ${griVal != null ? '$griStr (${_getGriClass(griVal)})' : 'N/A'}",
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    fontStyle: FontStyle.italic,
+                  ),
+                );
+              }),
               const SizedBox(height: 4),
               Text(
                 "GSI: ${isGsiValid ? '$gsiStr% (${_getSeverityClass(gsiVal)})' : 'N/A'}", 
