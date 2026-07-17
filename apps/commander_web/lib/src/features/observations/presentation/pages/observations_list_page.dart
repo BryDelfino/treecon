@@ -228,7 +228,7 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
         throw Exception('User not authenticated');
       }
 
-      var query = Supabase.instance.client.from('observations').select('*, users!observations_user_id_fkey!inner(user_name)');
+      var query = Supabase.instance.client.from('observations').select('*, users!observations_user_id_fkey!inner(user_name), verifier:users!observations_verifier_id_fkey(user_name)');
 
       if (widget.isExpertOnly) {
         query = query.eq('user_id', user.id).or('is_deleted.eq.false,is_deleted.is.null');
