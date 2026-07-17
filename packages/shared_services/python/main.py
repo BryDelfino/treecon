@@ -92,11 +92,11 @@ async def process_dataset(file: UploadFile = File(...)):
         
     def classify_gsi(val):
         if pd.isna(val): return 'Unknown'
-        if val < 10: return 'Healthy'
-        if val < 25: return 'Low'
-        if val < 50: return 'Moderate'
-        if val < 75: return 'High'
-        return 'Severe'
+        if val == 0: return 'Healthy'
+        if val <= 10: return 'Low'
+        if val <= 25: return 'Moderate'
+        if val <= 60: return 'High'
+        return 'Critical'
         
     df['severity_class'] = df['GSI'].apply(classify_gsi)
 

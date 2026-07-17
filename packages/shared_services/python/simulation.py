@@ -98,16 +98,16 @@ def _safe_intersection(geom_a, geom_b):
         return geom_a.buffer(0.0001).intersection(geom_b.buffer(0.0001))
 
 def get_color_for_value(val):
-    if val < 10.0:
+    if val == 0.0:
         return "#4CAF50"  # Green: Healthy
-    elif val < 25.0:
+    elif val <= 10.0:
         return "#FFEB3B"  # Yellow: Low
-    elif val < 50.0:
+    elif val <= 25.0:
         return "#FF9800"  # Orange: Moderate
-    elif val < 75.0:
+    elif val <= 60.0:
         return "#F44336"  # Red: High
     else:
-        return "#800000"  # Maroon: Severe
+        return "#800000"  # Maroon: Critical
 
 def run_ca_simulation(df, steps=5, grid_resolution=0.12, spread_factor=0.08):
     df = df.dropna(subset=['longitude', 'latitude', 'GSI'])
