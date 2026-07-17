@@ -1190,7 +1190,7 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
                           final griStr = getValue(['gri', 'GRI']);
                           final griVal = double.tryParse(griStr);
                           return Text(
-                            "GRI: ${griVal != null ? '$griStr (${_getGriClass(griVal)})' : 'N/A'}",
+                            "GRI: ${griVal != null ? '$griStr% (${_getGriClass(griVal)})' : 'N/A'}",
                             style: const TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.bold,
