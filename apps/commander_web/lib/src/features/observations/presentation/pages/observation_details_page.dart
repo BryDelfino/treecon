@@ -776,6 +776,12 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                               children: [
                                 const Text('Observation Details', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                                 const Divider(height: 24),
+                                if (widget.isVerifyMode) ...[
+                                  _buildDetailRow(Icons.person_outline, 'Owner', obs['users'] != null && obs['users'] is Map
+                                      ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown'
+                                      : 'Unknown'),
+                                  const SizedBox(height: 12),
+                                ],
                                 _buildDetailRow(Icons.calendar_today, 'Observation Timestamp', dateStr),
                                 const SizedBox(height: 12),
                                 _buildDetailRow(Icons.cloud_upload, 'Upload Timestamp', uploadStr),
