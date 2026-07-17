@@ -307,7 +307,7 @@ class _AddObservationPageState extends State<AddObservationPage> {
     final pickedDate = await showDatePicker(
       context: context,
       initialDate: initialDate,
-      firstDate: DateTime(2020),
+      firstDate: DateTime(1900),
       lastDate: DateTime.now(),
     );
     if (pickedDate == null || !mounted) return;
