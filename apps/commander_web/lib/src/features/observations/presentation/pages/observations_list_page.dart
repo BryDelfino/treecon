@@ -777,7 +777,7 @@ class _ObservationsListPageState extends State<ObservationsListPage> {
             final isAnonymous = obs['is_anonymous'] == true;
             final isOwner = obs['user_id'] == Supabase.instance.client.auth.currentUser?.id;
             final contributorName = (isPublic && isAnonymous && !isOwner)
-                ? 'Anonymous Scout'
+                ? 'Anonymous User'
                 : (obs['users'] != null && obs['users'] is Map
                     ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
                     : 'Unknown User');

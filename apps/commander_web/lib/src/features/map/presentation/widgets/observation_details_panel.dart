@@ -157,7 +157,7 @@ class _ObservationDetailsPanelState extends State<ObservationDetailsPanel> {
         : null;
     final isExpert = ownerRole == 'EXPERT';
     final contributorName = (isPublic && isAnonymous && !isOwner)
-        ? 'Anonymous Scout'
+        ? 'Anonymous User'
         : (widget.obs['users'] != null && widget.obs['users'] is Map
             ? (widget.obs['users'] as Map)['user_name']?.toString() ?? 'Unknown User'
             : 'Unknown User');

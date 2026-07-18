@@ -778,7 +778,7 @@ class _ObservationDetailsPageState extends State<ObservationDetailsPage> {
                                 const Divider(height: 24),
                                 if (widget.isVerifyMode) ...[
                                   _buildDetailRow(Icons.person_outline, 'Owner', _isAnonymous
-                                      ? 'Anonymous Scout'
+                                      ? 'Anonymous User'
                                       : (obs['users'] != null && obs['users'] is Map
                                           ? (obs['users'] as Map)['user_name']?.toString() ?? 'Unknown'
                                           : 'Unknown')),
